@@ -1,0 +1,8 @@
+node_modules/
+.next/
+.env*
+*.csv
+*.xlsx
+nepse_historical.xlsx
+combined_excel.xlsx
+
