@@ -3,8 +3,7 @@ import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import {
   PieChart, Pie, Cell, Tooltip as ReTooltip, ResponsiveContainer,
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, BarChart, Bar,
-  ComposedChart, Line,
+  XAxis, YAxis, CartesianGrid, BarChart, Bar,
 } from 'recharts'
 
 interface Stock {
@@ -14,10 +13,9 @@ interface Stock {
   volume: number; turnover: number
 }
 
-/* ── helpers ── */
-const N   = (v: unknown) => { const n=Number(v); return Number.isFinite(n)?n:0 }
-const Cr  = (v: number) => `Rs.${(v/1e7).toFixed(2)}Cr`
-const Rs  = (v: number) => `Rs.${v.toLocaleString('en-NP',{maximumFractionDigits:2})}`
+const N  = (v: unknown) => { const n=Number(v); return Number.isFinite(n)?n:0 }
+const Cr = (v: number)  => `Rs.${(v/1e7).toFixed(2)}Cr`
+const Rs = (v: number)  => `Rs.${v.toLocaleString('en-NP',{maximumFractionDigits:2})}`
 
 function Badge({ v }: { v: number }) {
   const up = v >= 0
@@ -29,48 +27,14 @@ function Badge({ v }: { v: number }) {
   )
 }
 
-/* ── Candlestick bar (drawn via SVG inside a recharts BarChart) ── */
-function CandlestickBar(props: any) {
-  const { x, y, width, payload } = props
-  if (!payload) return null
-  const { open, close, high, low } = payload
-  const up    = close >= open
-  const color = up ? '#16a34a' : '#dc2626'
-  const bodyTop    = Math.min(open, close)
-  const bodyBottom = Math.max(open, close)
-  const bodyH      = Math.max(bodyBottom - bodyTop, 1)
-
-  // recharts gives y as top of candle body relative to chart area
-  // We need to map price→pixel ourselves via yScale passed through
-  // Simplification: use the bar y/height directly as proxy for body
-  const barH = props.height ?? 10
-  const midX = x + width / 2
-
-  return (
-    <g>
-      {/* wick */}
-      <line x1={midX} x2={midX} y1={y} y2={y + barH + 4} stroke={color} strokeWidth={1.5}/>
-      {/* body */}
-      <rect x={x+2} y={y} width={width-4} height={Math.max(barH,2)} fill={color} rx={1}/>
-    </g>
-  )
-}
-
-/* ── Pie custom label ── */
-function PieLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }: any) {
+function PieLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) {
   if (percent < 0.04) return null
-  const RADIAN = Math.PI / 180
-  const r  = innerRadius + (outerRadius - innerRadius) * 0.5
-  const x  = cx + r * Math.cos(-midAngle * RADIAN)
-  const y  = cy + r * Math.sin(-midAngle * RADIAN)
-  return (
-    <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight={600}>
-      {(percent * 100).toFixed(0)}%
-    </text>
-  )
+  const r = innerRadius + (outerRadius - innerRadius) * 0.5
+  const x = cx + r * Math.cos(-midAngle * Math.PI / 180)
+  const y = cy + r * Math.sin(-midAngle * Math.PI / 180)
+  return <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight={600}>{(percent*100).toFixed(0)}%</text>
 }
 
-/* ── Pie tooltip ── */
 function PieTip({ active, payload }: any) {
   if (!active||!payload?.length) return null
   const d = payload[0]
@@ -85,8 +49,7 @@ function PieTip({ active, payload }: any) {
 const SECTOR_COLORS = [
   '#4338ca','#0891b2','#059669','#d97706','#dc2626',
   '#7c3aed','#db2777','#65a30d','#ea580c','#0284c7',
-  '#6d28d9','#047857','#b45309','#9f1239','#1d4ed8',
-  '#0f766e','#7e22ce',
+  '#6d28d9','#047857','#b45309','#9f1239','#1d4ed8','#0f766e','#7e22ce',
 ]
 
 export default function DashboardPage() {
@@ -95,7 +58,7 @@ export default function DashboardPage() {
   const [loading,      setLoading]      = useState(true)
   const [sectorFilter, setSectorFilter] = useState('all')
   const [sortCol,      setSortCol]      = useState<'turnover'|'change'|'volume'>('turnover')
-  const [activeChart,  setActiveChart]  = useState<'pie'|'bar'|'candle'>('pie')
+  const [activeChart,  setActiveChart]  = useState<'pie'|'bar'>('pie')
 
   useEffect(() => {
     fetch('/api/stocks/all').then(r=>r.json()).then(d => {
@@ -116,31 +79,27 @@ export default function DashboardPage() {
     }).finally(()=>setLoading(false))
   },[])
 
-  /* ── derived ── */
-  const gainers    = useMemo(()=>stocks.filter(s=>s.percent_change>0).sort((a,b)=>b.percent_change-a.percent_change),[stocks])
-  const losers     = useMemo(()=>stocks.filter(s=>s.percent_change<0).sort((a,b)=>a.percent_change-b.percent_change),[stocks])
-  const neutral    = useMemo(()=>stocks.filter(s=>s.percent_change===0),[stocks])
-  const totalTurn  = useMemo(()=>stocks.reduce((s,r)=>s+r.turnover,0),[stocks])
-  const gainTurn   = useMemo(()=>gainers.reduce((s,r)=>s+r.turnover,0),[gainers])
-  const lossTurn   = useMemo(()=>losers.reduce((s,r)=>s+r.turnover,0),[losers])
-  const avgChange  = useMemo(()=>stocks.length?stocks.reduce((s,r)=>s+r.percent_change,0)/stocks.length:0,[stocks])
-  const sectors    = useMemo(()=>Array.from(new Set(stocks.map(s=>s.sector))).sort(),[stocks])
+  const gainers   = useMemo(()=>stocks.filter(s=>s.percent_change>0).sort((a,b)=>b.percent_change-a.percent_change),[stocks])
+  const losers    = useMemo(()=>stocks.filter(s=>s.percent_change<0).sort((a,b)=>a.percent_change-b.percent_change),[stocks])
+  const neutral   = useMemo(()=>stocks.filter(s=>s.percent_change===0),[stocks])
+  const totalTurn = useMemo(()=>stocks.reduce((s,r)=>s+r.turnover,0),[stocks])
+  const gainTurn  = useMemo(()=>gainers.reduce((s,r)=>s+r.turnover,0),[gainers])
+  const lossTurn  = useMemo(()=>losers.reduce((s,r)=>s+r.turnover,0),[losers])
+  const avgChange = useMemo(()=>stocks.length?stocks.reduce((s,r)=>s+r.percent_change,0)/stocks.length:0,[stocks])
+  const sectors   = useMemo(()=>Array.from(new Set(stocks.map(s=>s.sector))).sort(),[stocks])
 
   const sectorStats = useMemo(()=>sectors.map((sec,i)=>{
-    const ss = stocks.filter(s=>s.sector===sec)
+    const ss=stocks.filter(s=>s.sector===sec)
     return { sec, count:ss.length, g:ss.filter(s=>s.percent_change>0).length,
       l:ss.filter(s=>s.percent_change<0).length,
       avg:ss.length?ss.reduce((a,s)=>a+s.percent_change,0)/ss.length:0,
       turn:ss.reduce((a,s)=>a+s.turnover,0), color:SECTOR_COLORS[i%SECTOR_COLORS.length] }
   }).sort((a,b)=>b.turn-a.turn),[stocks,sectors])
 
-  /* Candle data: top 15 by turnover */
-  const candleData = useMemo(()=>
+  const rangeData = useMemo(()=>
     [...stocks].sort((a,b)=>b.turnover-a.turnover).slice(0,15).map(s=>({
-      symbol:s.symbol, open:s.open_price, high:s.high_price,
-      low:s.low_price, close:s.close_price,
-      range: s.high_price - s.low_price,
-      up: s.close_price >= s.open_price,
+      symbol:s.symbol, high:s.high_price, low:s.low_price,
+      range:s.high_price-s.low_price, up:s.close_price>=s.open_price,
     })),[stocks])
 
   const filtered = useMemo(()=>stocks
@@ -181,7 +140,7 @@ export default function DashboardPage() {
   return (
     <div className="space-y-5 max-w-screen-xl mx-auto">
 
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold" style={{ color:'#1e1b4b' }}>Market Overview</h1>
@@ -197,7 +156,7 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* ── KPI cards ── */}
+      {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
           { label:'Total Turnover',   value:Cr(totalTurn),                                    sub:`${stocks.length} companies`,  accent:'#4338ca' },
@@ -213,24 +172,22 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* ── Charts row ── */}
+      {/* Charts row */}
       <div className="grid lg:grid-cols-3 gap-4">
-
-        {/* Sector pie chart */}
+        {/* Sector pie */}
         <div className="bg-white rounded-xl border p-5" style={{ borderColor:'#e2e8f0' }}>
           <h2 className="text-sm font-semibold mb-3" style={{ color:'#1e1b4b' }}>Sector Distribution</h2>
           <ResponsiveContainer width="100%" height={200}>
             <PieChart>
               <Pie data={sectorStats} dataKey="count" nameKey="sec" cx="50%" cy="50%"
                 innerRadius={45} outerRadius={80} labelLine={false} label={PieLabel}>
-                {sectorStats.map((s,i) => <Cell key={s.sec} fill={s.color}/>)}
+                {sectorStats.map((s,i)=><Cell key={s.sec} fill={s.color}/>)}
               </Pie>
               <ReTooltip content={<PieTip/>}/>
             </PieChart>
           </ResponsiveContainer>
-          {/* Legend */}
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 max-h-28 overflow-y-auto">
-            {sectorStats.slice(0,10).map(s => (
+            {sectorStats.slice(0,10).map(s=>(
               <div key={s.sec} className="flex items-center gap-1.5 text-xs truncate" style={{ color:'#475569' }}>
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background:s.color }}/>
                 <span className="truncate">{s.sec.split(' ').slice(0,2).join(' ')}</span>
@@ -239,21 +196,19 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Gainers vs Losers donut */}
+        {/* Market breadth donut */}
         <div className="bg-white rounded-xl border p-5" style={{ borderColor:'#e2e8f0' }}>
           <h2 className="text-sm font-semibold mb-3" style={{ color:'#1e1b4b' }}>Market Breadth</h2>
           <ResponsiveContainer width="100%" height={200}>
             <PieChart>
               <Pie data={[
-                { name:'Gainers', value:gainers.length, fill:'#16a34a' },
-                { name:'Losers',  value:losers.length,  fill:'#dc2626' },
-                { name:'Neutral', value:neutral.length,  fill:'#94a3b8' },
+                { name:'Gainers', value:gainers.length, turn:gainTurn },
+                { name:'Losers',  value:losers.length,  turn:lossTurn },
+                { name:'Neutral', value:neutral.length,  turn:0 },
               ]} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={50} outerRadius={80} labelLine={false} label={PieLabel}>
-                <Cell fill="#16a34a"/>
-                <Cell fill="#dc2626"/>
-                <Cell fill="#94a3b8"/>
+                <Cell fill="#16a34a"/><Cell fill="#dc2626"/><Cell fill="#94a3b8"/>
               </Pie>
-              <ReTooltip formatter={(v:any,n:any) => [`${v} companies`, n]}
+              <ReTooltip formatter={(v:any,n:any)=>[`${v} companies`,n]}
                 contentStyle={{ background:'white', border:'1px solid #e2e8f0', borderRadius:8, fontSize:12 }}/>
             </PieChart>
           </ResponsiveContainer>
@@ -289,16 +244,14 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ── Candlestick / chart toggle ── */}
+      {/* Pie / Range toggle panel */}
       <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor:'#e2e8f0' }}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b" style={{ borderColor:'#f1f5f9' }}>
           <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>
-            {activeChart==='pie'    && 'Sector Turnover Share'}
-            {activeChart==='bar'    && 'Top 15 — Price Range (High–Low)'}
-            {activeChart==='candle' && 'Top 15 — Candlestick (Open/Close/High/Low)'}
+            {activeChart==='pie' ? 'Sector Turnover Share' : 'Top 15 — Price Range (High–Low)'}
           </h2>
           <div className="flex gap-2">
-            {([['pie','Pie'],['bar','Range'],['candle','Candle']] as const).map(([k,l])=>(
+            {([['pie','Pie'],['bar','Range']] as const).map(([k,l])=>(
               <button key={k} onClick={()=>setActiveChart(k)}
                 className="text-xs px-2.5 py-1 rounded-md border font-medium transition-all"
                 style={{ background:activeChart===k?'#eef2ff':'white', color:activeChart===k?'#4338ca':'#64748b', borderColor:activeChart===k?'#c7d2fe':'#e2e8f0', cursor:'pointer' }}>
@@ -321,101 +274,29 @@ export default function DashboardPage() {
           )}
           {activeChart==='bar' && (
             <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={candleData} margin={{top:4,right:4,left:0,bottom:20}}>
+              <BarChart data={rangeData} margin={{top:4,right:4,left:0,bottom:20}}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
                 <XAxis dataKey="symbol" tick={{fill:'#94a3b8',fontSize:10}} tickLine={false} axisLine={false} angle={-35} textAnchor="end" interval={0}/>
-                <YAxis tick={{fill:'#94a3b8',fontSize:10}} tickLine={false} axisLine={false} tickFormatter={v=>`${v}`} width={55}/>
-                <ReTooltip formatter={(v:any,n:any,p:any)=>[`H:${p.payload.high} L:${p.payload.low}`,p.payload.symbol]}
+                <YAxis tick={{fill:'#94a3b8',fontSize:10}} tickLine={false} axisLine={false} tickFormatter={v=>`Rs.${v}`} width={55}/>
+                <ReTooltip formatter={(_:any,__:any,p:any)=>[`H: Rs.${p.payload.high} / L: Rs.${p.payload.low}`,'Range']}
                   contentStyle={{ background:'white', border:'1px solid #e2e8f0', borderRadius:8, fontSize:11 }}/>
                 <Bar dataKey="range" radius={[3,3,0,0]}>
-                  {candleData.map(d=>(
+                  {rangeData.map(d=>(
                     <Cell key={d.symbol} fill={d.up?'#4338ca':'#dc2626'}/>
                   ))}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           )}
-          {activeChart==='candle' && (
-            <div className="overflow-x-auto">
-              <div style={{ minWidth: 600 }}>
-                <ResponsiveContainer width="100%" height={280}>
-                  <ComposedChart data={candleData} margin={{top:4,right:8,left:0,bottom:20}}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
-                    <XAxis dataKey="symbol" tick={{fill:'#94a3b8',fontSize:10}} tickLine={false} axisLine={false} angle={-35} textAnchor="end" interval={0}/>
-                    <YAxis tick={{fill:'#94a3b8',fontSize:10}} tickLine={false} axisLine={false} width={58}
-                      tickFormatter={v=>`Rs.${Number(v).toLocaleString()}`}/>
-                    <ReTooltip
-                      content={({ active, payload }:any) => {
-                        if (!active||!payload?.length) return null
-                        const d = payload[0]?.payload
-                        return (
-                          <div className="bg-white border rounded-lg p-3 text-xs shadow-md" style={{ borderColor:'#e2e8f0' }}>
-                            <p className="font-bold mb-1.5" style={{ color:'#1e1b4b' }}>{d.symbol}</p>
-                            {[['Open',d.open,'#475569'],['High',d.high,'#16a34a'],['Low',d.low,'#dc2626'],['Close',d.close,'#0f172a']].map(([l,v,c])=>(
-                              <div key={String(l)} className="flex justify-between gap-5 mb-0.5">
-                                <span style={{ color:'#94a3b8' }}>{l}</span>
-                                <span className="font-semibold" style={{ color:String(c), fontFamily:'monospace' }}>Rs.{Number(v).toLocaleString()}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )
-                      }}
-                    />
-                    {/* wick — high */}
-                    <Bar dataKey="high" fill="transparent" stroke="none" barSize={1}/>
-                    {/* Body: open→close range as bar */}
-                    {candleData.map((d, i) => {
-                      const up    = d.close >= d.open
-                      const color = up ? '#16a34a' : '#dc2626'
-                      return null // rendered below via SVG overlay
-                    })}
-                    {/* Use Line for high/low wicks */}
-                    <Line dataKey="high" stroke="transparent" dot={false} activeDot={false}/>
-                  </ComposedChart>
-                </ResponsiveContainer>
-                {/* Pure SVG candlestick overlay */}
-                <div className="mt-1 overflow-x-auto">
-                  <svg width={Math.max(600, candleData.length*42)} height={200}>
-                    {candleData.map((d,i) => {
-                      const all    = candleData.map(x=>x.high)
-                      const maxH   = Math.max(...all)
-                      const minL   = Math.min(...candleData.map(x=>x.low))
-                      const range  = maxH - minL || 1
-                      const W      = Math.max(600, candleData.length*42)
-                      const colW   = W / candleData.length
-                      const cx     = i * colW + colW/2
-                      const toY    = (p:number) => 8 + (1 - (p-minL)/range) * 184
-                      const up     = d.close >= d.open
-                      const color  = up ? '#16a34a' : '#dc2626'
-                      const bodyTop    = toY(Math.max(d.open, d.close))
-                      const bodyBottom = toY(Math.min(d.open, d.close))
-                      const bodyH  = Math.max(bodyBottom - bodyTop, 2)
-                      const bw     = Math.min(colW*0.5, 16)
-                      return (
-                        <g key={d.symbol}>
-                          {/* wick */}
-                          <line x1={cx} x2={cx} y1={toY(d.high)} y2={toY(d.low)} stroke={color} strokeWidth={1.5} opacity={0.7}/>
-                          {/* body */}
-                          <rect x={cx-bw/2} y={bodyTop} width={bw} height={bodyH} fill={color} rx={2} opacity={0.9}/>
-                          {/* label */}
-                          <text x={cx} y={195} textAnchor="middle" fontSize={9} fill="#94a3b8">{d.symbol}</text>
-                        </g>
-                      )
-                    })}
-                  </svg>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
-      {/* ── Gainers + Losers ── */}
+      {/* Gainers + Losers */}
       <div className="grid md:grid-cols-2 gap-4">
         {[
-          { title:' Top Gainers', data:gainers.slice(0,10), up:true  },
-          { title:' Top Losers',  data:losers.slice(0,10),  up:false },
-        ].map(({title,data,up})=>(
+          { title:'Top Gainers', data:gainers.slice(0,10) },
+          { title:'Top Losers',  data:losers.slice(0,10)  },
+        ].map(({title,data})=>(
           <div key={title} className="bg-white rounded-xl border overflow-hidden" style={{ borderColor:'#e2e8f0' }}>
             <div className="px-5 py-3.5 border-b flex items-center justify-between" style={{ borderColor:'#f1f5f9' }}>
               <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>{title}</h2>
@@ -453,7 +334,7 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* ── Sector table ── */}
+      {/* Sector table */}
       <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor:'#e2e8f0' }}>
         <div className="px-5 py-3.5 border-b" style={{ borderColor:'#f1f5f9' }}>
           <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>
@@ -475,10 +356,12 @@ export default function DashboardPage() {
                   style={{ borderColor:'#f8fafc', background:sectorFilter===s.sec?'#eef2ff':'transparent' }}
                   onClick={()=>setSectorFilter(sectorFilter===s.sec?'all':s.sec)}
                   onMouseOver={e=>{ if(sectorFilter!==s.sec)(e.currentTarget as HTMLElement).style.background='#f8fafc' }}
-                  onMouseOut={e=>{  if(sectorFilter!==s.sec)(e.currentTarget as HTMLElement).style.background='transparent' }}>
-                  <td className="px-5 py-2.5 font-medium flex items-center gap-2" style={{ color:sectorFilter===s.sec?'#4338ca':'#0f172a' }}>
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background:s.color }}/>
-                    {s.sec}
+                  onMouseOut={e=>{ if(sectorFilter!==s.sec)(e.currentTarget as HTMLElement).style.background='transparent' }}>
+                  <td className="px-5 py-2.5 font-medium" style={{ color:sectorFilter===s.sec?'#4338ca':'#0f172a' }}>
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background:s.color }}/>
+                      {s.sec}
+                    </div>
                   </td>
                   <td className="px-5 py-2.5" style={{ color:'#475569' }}>{s.count}</td>
                   <td className="px-5 py-2.5 font-medium" style={{ color:'#16a34a' }}>{s.g}</td>
@@ -494,7 +377,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ── All companies ── */}
+      {/* All companies */}
       <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor:'#e2e8f0' }}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b flex-wrap gap-3" style={{ borderColor:'#f1f5f9' }}>
           <div className="flex items-center gap-3">

@@ -39,6 +39,36 @@ EXCEL_LOCAL = "nepse_historical.xlsx"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
+
+# Known NEPSE sector classifications by symbol
+SECTOR_MAP = {
+    1:  ['NABIL','EBL','NICA','SBI','ADBL','BOKL','CCBL','CBL','CZBIL','GBIME','HBL','KBL',
+          'LBL','MBL','NBB','NBL','NCCB','NIB','NMB','PCBL','PRVU','SANB','SCB','SRBL','SHBL',
+          'MAXA','MEGA','NIMB','JBNL','SUNBL','LBBL','BNBL','SHINE'],  # Commercial Bank
+    3:  ['DDBL','EDBL','GBBL','GRDBL','ICFC','JBBL','KBBL','LSBBL','MLBL','MNBBL','MPBL',
+          'MRGD','NABBC','ODBL','SADBL','SAPDBL','SBBL','SDBL','SINDU','SPDBL','SSBL','TBBL',
+          'WBBL','CORBL','KSBBL','RIPDBL','SSDBL','PBBL','BPCL','EDCL','RBBI','HAMRO'],  # Dev Bank
+    4:  ['CFCL','GUFL','GFCL','ICC','IFIC','JFL','MFIL','NFCL','PROFL','SFCL','SIFC','SKFL',
+          'UFL','AFCL','BFC','CBFIN','CMF','NCFL','NFIL','PAFAN','MPFL','RLFL','SVFL'],  # Finance
+    7:  ['AHPC','BARUN','BEDC','BHPL','BHL','CHCL','DHPL','DOLTI','HDHPC','HPPL','HURJA',
+          'KBHPL','KPCL','LBHPL','MBJCL','MKCL','MKJC','MMKJL','NHDL','NHPC','NPCBL','NYADI',
+          'PPCL','RADHI','RHCL','RIDI','RURU','SANJEN','SAHAS','SJCL','SMPL','SPDL','SRPL',
+          'SSHL','TMHL','UHEWA','UPCL','USHEC','USHL','YETI','NGPL','KKHC','UPPER'],  # Hydropower
+    9:  ['ALICL','CLI','GLICL','ILI','JLIC','LICN','MLIC','NLIC','PCLI','PMLI','SNLI','SLI',
+          'RNLI','SRLI','NILI','ULIF','PLIT','NWCL'],  # Life Insurance
+    11: ['MFBS','SMFBS','GMFBS','RMDC','SWMF','UNLB','WNLB','NICLBSL','MLBSL','SKDBL',
+          'FOWAD','NIRDHAN','NSLBBL','SWBBL','GILBSL','SLBSL','GLBSL','JBLB','KMFL',
+          'NESDO','NMFBS','SDESI','SLBBL','SMFL','CBBL'],  # Microfinance
+    13: ['AIL','HGICL','HGI','IGI','LGIL','NIC','NLICL','NIL','PICL','PLIC','PRIN','RBCL',
+          'RIMCL','SALICL','SGIC','SICL','SLICL','TICL','UAIL','API','SEIT'],  # Non-Life Insurance
+    6:  ['EVRL','OHL','TRH','YHL','MHCL','SHIVM','SHL'],  # Hotel & Tourism
+    10: ['BSML','HDL','GCIL','BNHC','NTC','STC','NIFRA','UNL','SAIL','NBBL'],  # Manufacturing
+    8:  ['CHDC','CIT','HIDCL','NIL'],  # Investment
+    17: ['BBC','STC','NRIC'],  # Trading
+}
+# Reverse lookup: symbol -> sector_id
+SYMBOL_SECTOR = {sym: sid for sid, syms in SECTOR_MAP.items() for sym in syms}
+
 def is_trading_day(d: str) -> bool:
     return datetime.strptime(d, "%Y-%m-%d").weekday() not in (4, 5)
 
@@ -216,8 +246,8 @@ class Loader:
 
         try:
             self.cur.execute(
-                "INSERT INTO company (symbol, name, sector_id, is_active) VALUES (%s,%s,14,1)",
-                (symbol, symbol),
+                "INSERT INTO company (symbol, name, sector_id, is_active) VALUES (%s,%s,%s,1)",
+                (symbol, symbol, SYMBOL_SECTOR.get(symbol, 14)),
             )
             self.conn.commit()
             cid = self.cur.lastrowid
@@ -375,6 +405,21 @@ def main():
             time.sleep(0.2)
 
     loader.close()
+
+    # Auto-fix sectors after loading (calls stored procedure)
+    print("\nFixing sector classifications...")
+    try:
+        import mysql.connector
+        conn = mysql.connector.connect(**DB)
+        cur = conn.cursor()
+        cur.callproc("sp_fix_sectors")
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Sectors updated via sp_fix_sectors()")
+    except Exception as e:
+        print(f"Sector fix skipped: {e}")
+
     print("DONE")
     print(f"Total loaded: {total_loaded}")
     print(f"Total dupes: {total_dupes}")
