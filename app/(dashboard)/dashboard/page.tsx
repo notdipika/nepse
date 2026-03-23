@@ -1,22 +1,22 @@
 'use client'
+
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import {
-  PieChart, Pie, Cell, Tooltip as ReTooltip, ResponsiveContainer,
-  XAxis, YAxis, CartesianGrid, BarChart, Bar,
+  PieChart, Pie, Cell, Tooltip as ReTooltip,
+  ResponsiveContainer, XAxis, YAxis, CartesianGrid, BarChart, Bar,
+  ComposedChart, Area, Line,
 } from 'recharts'
+import { toNum, toCrore, rsFormat, normaliseStockRow, type NormalisedStock } from '@/lib/utils'
 
-interface Stock {
-  symbol: string; name: string; sector: string
-  close_price: number; percent_change: number
-  open_price: number; high_price: number; low_price: number
-  volume: number; turnover: number
-}
+// ── Colour palette for sectors ─────────────────────────────────────
+const SECTOR_COLORS = [
+  '#4338ca','#0891b2','#059669','#d97706','#dc2626',
+  '#7c3aed','#db2777','#65a30d','#ea580c','#0284c7',
+  '#6d28d9','#047857','#b45309','#9f1239','#1d4ed8','#0f766e','#7e22ce',
+]
 
-const N  = (v: unknown) => { const n=Number(v); return Number.isFinite(n)?n:0 }
-const Cr = (v: number)  => `Rs.${(v/1e7).toFixed(2)}Cr`
-const Rs = (v: number)  => `Rs.${v.toLocaleString('en-NP',{maximumFractionDigits:2})}`
-
+// ── Sub-components ─────────────────────────────────────────────────
 function Badge({ v }: { v: number }) {
   const up = v >= 0
   return (
@@ -27,89 +27,29 @@ function Badge({ v }: { v: number }) {
   )
 }
 
-function PieLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) {
-  if (percent < 0.04) return null
+function PiePct({ cx, cy, midAngle, innerRadius, outerRadius, percent }: {
+  cx?: number; cy?: number; midAngle?: number; innerRadius?: number; outerRadius?: number; percent?: number
+}) {
+  if (!cx || !cy || !midAngle === undefined || !innerRadius || !outerRadius || (percent ?? 0) < 0.04) return null
   const r = innerRadius + (outerRadius - innerRadius) * 0.5
-  const x = cx + r * Math.cos(-midAngle * Math.PI / 180)
-  const y = cy + r * Math.sin(-midAngle * Math.PI / 180)
-  return <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight={600}>{(percent*100).toFixed(0)}%</text>
+  const x = cx + r * Math.cos(-(midAngle ?? 0) * Math.PI / 180)
+  const y = cy + r * Math.sin(-(midAngle ?? 0) * Math.PI / 180)
+  return <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight={600}>{((percent??0)*100).toFixed(0)}%</text>
 }
 
-function PieTip({ active, payload }: any) {
-  if (!active||!payload?.length) return null
+function SectorTip({ active, payload }: { active?: boolean; payload?: { name: string; value: number; payload: { turn: number } }[] }) {
+  if (!active || !payload?.length) return null
   const d = payload[0]
   return (
     <div className="bg-white border rounded-lg p-2.5 text-xs shadow-md" style={{ borderColor:'#e2e8f0' }}>
       <p className="font-semibold mb-0.5" style={{ color:'#0f172a' }}>{d.name}</p>
-      <p style={{ color:'#64748b' }}>{d.value} companies · {Cr(d.payload.turn)}</p>
+      <p style={{ color:'#64748b' }}>{d.value} companies · {toCrore(d.payload.turn)}</p>
     </div>
   )
 }
 
-const SECTOR_COLORS = [
-  '#4338ca','#0891b2','#059669','#d97706','#dc2626',
-  '#7c3aed','#db2777','#65a30d','#ea580c','#0284c7',
-  '#6d28d9','#047857','#b45309','#9f1239','#1d4ed8','#0f766e','#7e22ce',
-]
-
-export default function DashboardPage() {
-  const [stocks,       setStocks]       = useState<Stock[]>([])
-  const [tradingDate,  setTradingDate]  = useState('')
-  const [loading,      setLoading]      = useState(true)
-  const [sectorFilter, setSectorFilter] = useState('all')
-  const [sortCol,      setSortCol]      = useState<'turnover'|'change'|'volume'>('turnover')
-  const [activeChart,  setActiveChart]  = useState<'pie'|'bar'>('pie')
-
-  useEffect(() => {
-    fetch('/api/stocks/all').then(r=>r.json()).then(d => {
-      const rows = Array.isArray(d?.rows)?d.rows:Array.isArray(d)?d:[]
-      setTradingDate(d?.tradingDate??'')
-      setStocks(rows.map((r:any) => ({
-        symbol:         String(r.symbol??'').toUpperCase(),
-        name:           String(r.company_name??r.name??''),
-        sector:         String(r.sector_name??r.sector??'Others'),
-        close_price:    N(r.close_price),
-        percent_change: N(r.change_percent??r.percent_change),
-        open_price:     N(r.open_price),
-        high_price:     N(r.high_price),
-        low_price:      N(r.low_price),
-        volume:         N(r.volume),
-        turnover:       N(r.turnover),
-      })))
-    }).finally(()=>setLoading(false))
-  },[])
-
-  const gainers   = useMemo(()=>stocks.filter(s=>s.percent_change>0).sort((a,b)=>b.percent_change-a.percent_change),[stocks])
-  const losers    = useMemo(()=>stocks.filter(s=>s.percent_change<0).sort((a,b)=>a.percent_change-b.percent_change),[stocks])
-  const neutral   = useMemo(()=>stocks.filter(s=>s.percent_change===0),[stocks])
-  const totalTurn = useMemo(()=>stocks.reduce((s,r)=>s+r.turnover,0),[stocks])
-  const gainTurn  = useMemo(()=>gainers.reduce((s,r)=>s+r.turnover,0),[gainers])
-  const lossTurn  = useMemo(()=>losers.reduce((s,r)=>s+r.turnover,0),[losers])
-  const avgChange = useMemo(()=>stocks.length?stocks.reduce((s,r)=>s+r.percent_change,0)/stocks.length:0,[stocks])
-  const sectors   = useMemo(()=>Array.from(new Set(stocks.map(s=>s.sector))).sort(),[stocks])
-
-  const sectorStats = useMemo(()=>sectors.map((sec,i)=>{
-    const ss=stocks.filter(s=>s.sector===sec)
-    return { sec, count:ss.length, g:ss.filter(s=>s.percent_change>0).length,
-      l:ss.filter(s=>s.percent_change<0).length,
-      avg:ss.length?ss.reduce((a,s)=>a+s.percent_change,0)/ss.length:0,
-      turn:ss.reduce((a,s)=>a+s.turnover,0), color:SECTOR_COLORS[i%SECTOR_COLORS.length] }
-  }).sort((a,b)=>b.turn-a.turn),[stocks,sectors])
-
-  const rangeData = useMemo(()=>
-    [...stocks].sort((a,b)=>b.turnover-a.turnover).slice(0,15).map(s=>({
-      symbol:s.symbol, high:s.high_price, low:s.low_price,
-      range:s.high_price-s.low_price, up:s.close_price>=s.open_price,
-    })),[stocks])
-
-  const filtered = useMemo(()=>stocks
-    .filter(s=>sectorFilter==='all'||s.sector===sectorFilter)
-    .sort((a,b)=>sortCol==='turnover'?b.turnover-a.turnover:sortCol==='change'?Math.abs(b.percent_change)-Math.abs(a.percent_change):b.volume-a.volume)
-  ,[stocks,sectorFilter,sortCol])
-
-  const todayNPT = new Date(Date.now()+(5*60+45)*60*1000).toISOString().split('T')[0]
-
-  if (loading) return (
+function Spinner() {
+  return (
     <div className="flex items-center justify-center h-64 gap-3 text-sm" style={{ color:'#94a3b8' }}>
       <svg className="animate-spin w-5 h-5" style={{ color:'#4338ca' }} fill="none" viewBox="0 0 24 24">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
@@ -118,24 +58,101 @@ export default function DashboardPage() {
       Loading market data…
     </div>
   )
+}
 
-  if (stocks.length===0) return (
+// ── Main page ──────────────────────────────────────────────────────
+export default function DashboardPage() {
+  const [stocks,       setStocks]       = useState<NormalisedStock[]>([])
+  const [tradingDate,  setTradingDate]  = useState('')
+  const [dailySummary, setDailySummary] = useState<{trading_date:string;total_turnover:number;gainers:number;losers:number;avg_change_pct:number}[]>([])
+  const [loading,      setLoading]      = useState(true)
+  const [sectorFilter, setSectorFilter] = useState('all')
+  const [sortCol,      setSortCol]      = useState<'turnover'|'change'|'volume'>('turnover')
+  const [activeChart,  setActiveChart]  = useState<'pie'|'bar'>('pie')
+
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/stocks/all').then(r => r.json()),
+      fetch('/api/db-explorer', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ sql: 'SELECT trading_date, total_turnover, gainers, losers, COALESCE(avg_change_pct,0) AS avg_change_pct FROM daily_market_summary ORDER BY trading_date ASC LIMIT 30;' })
+      }).then(r => r.json()),
+    ]).then(([d, summary]) => {
+      const rows: unknown[] = Array.isArray(d?.rows) ? d.rows : Array.isArray(d) ? d : []
+      setTradingDate(d?.tradingDate ?? '')
+      setStocks(rows.map(r => normaliseStockRow(r as Record<string, unknown>)))
+      if (Array.isArray(summary?.rows)) {
+        setDailySummary(summary.rows.map((r: unknown[]) => ({
+          trading_date:   String(r[0] ?? '').slice(0,10),
+          total_turnover: Number(r[1] ?? 0),
+          gainers:        Number(r[2] ?? 0),
+          losers:         Number(r[3] ?? 0),
+          avg_change_pct: Number(r[4] ?? 0),
+        })))
+      }
+    }).finally(() => setLoading(false))
+  }, [])
+
+  const gainers   = useMemo(() => stocks.filter(s => toNum(s.change_percent) > 0).sort((a,b) => toNum(b.change_percent) - toNum(a.change_percent)), [stocks])
+  const losers    = useMemo(() => stocks.filter(s => toNum(s.change_percent) < 0).sort((a,b) => toNum(a.change_percent) - toNum(b.change_percent)), [stocks])
+  const neutral   = useMemo(() => stocks.filter(s => toNum(s.change_percent) === 0), [stocks])
+  const totalTurn = useMemo(() => stocks.reduce((s,r) => s + toNum(r.turnover), 0), [stocks])
+  const gainTurn  = useMemo(() => gainers.reduce((s,r) => s + toNum(r.turnover), 0), [gainers])
+  const lossTurn  = useMemo(() => losers.reduce((s,r)  => s + toNum(r.turnover), 0), [losers])
+  const avgChange = useMemo(() => stocks.length ? stocks.reduce((s,r) => s + toNum(r.change_percent), 0) / stocks.length : 0, [stocks])
+  const sectors   = useMemo(() => Array.from(new Set(stocks.map(s => s.sector_name))).sort(), [stocks])
+
+  const sectorStats = useMemo(() => sectors.map((sec, i) => {
+    const ss = stocks.filter(s => s.sector_name === sec)
+    return {
+      sec, count: ss.length,
+      g: ss.filter(s => toNum(s.change_percent) > 0).length,
+      l: ss.filter(s => toNum(s.change_percent) < 0).length,
+      avg: ss.length ? ss.reduce((a,s) => a + toNum(s.change_percent), 0) / ss.length : 0,
+      turn: ss.reduce((a,s) => a + toNum(s.turnover), 0),
+      color: SECTOR_COLORS[i % SECTOR_COLORS.length],
+    }
+  }).sort((a,b) => b.turn - a.turn), [stocks, sectors])
+
+  const rangeData = useMemo(() =>
+    [...stocks].sort((a,b) => toNum(b.turnover) - toNum(a.turnover)).slice(0,15).map(s => ({
+      symbol: s.symbol,
+      high: toNum(s.high_price), low: toNum(s.low_price),
+      range: toNum(s.high_price) - toNum(s.low_price),
+      up: toNum(s.close_price) >= toNum(s.open_price),
+    })), [stocks])
+
+  const filtered = useMemo(() => stocks
+    .filter(s => sectorFilter === 'all' || s.sector_name === sectorFilter)
+    .sort((a,b) =>
+      sortCol === 'turnover' ? toNum(b.turnover) - toNum(a.turnover)
+      : sortCol === 'change' ? Math.abs(toNum(b.change_percent)) - Math.abs(toNum(a.change_percent))
+      : toNum(b.volume) - toNum(a.volume)
+    ), [stocks, sectorFilter, sortCol])
+
+  // Nepal time = UTC+5:45
+  const todayNPT = new Date(Date.now() + (5*60+45)*60*1000).toISOString().split('T')[0]
+  // NEPSE trades Sun(0)–Thu(4). If today is Fri/Sat, last session was Thu — not "market closed"
+  const nptDay = new Date(Date.now() + (5*60+45)*60*1000).getUTCDay()
+  const isWeekend = nptDay === 5 || nptDay === 6  // Fri or Sat
+  const showClosedBanner = tradingDate && tradingDate !== todayNPT && !isWeekend
+
+  if (loading) return <Spinner />
+
+  if (stocks.length === 0) return (
     <div className="max-w-lg mx-auto mt-16 text-center">
       <div className="bg-white rounded-2xl border p-10" style={{ borderColor:'#e2e8f0' }}>
-        <div className="w-14 h-14 rounded-full mx-auto mb-5 flex items-center justify-center"
-          style={{ background:'linear-gradient(135deg,#eef2ff,#e0e7ff)', border:'1px solid #c7d2fe' }}>
-          <svg className="w-7 h-7" style={{ color:'#4338ca' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-          </svg>
-        </div>
         <h2 className="text-lg font-semibold mb-2" style={{ color:'#1e1b4b' }}>No market data yet</h2>
-        <p className="text-sm mb-5" style={{ color:'#64748b' }}>Run this to load data from the GitHub archive:</p>
+        <p className="text-sm mb-5" style={{ color:'#64748b' }}>Run this to load data:</p>
         <code className="block rounded-lg px-5 py-3 text-sm text-left" style={{ background:'#1e1b4b', color:'#a5b4fc', fontFamily:'monospace' }}>
-          .venv/bin/python load_history.py --excel
+          python load_history.py --days 90
         </code>
       </div>
     </div>
   )
+
+  const Rs = (v: number) => rsFormat(v)
 
   return (
     <div className="space-y-5 max-w-screen-xl mx-auto">
@@ -145,10 +162,10 @@ export default function DashboardPage() {
         <div>
           <h1 className="text-xl font-bold" style={{ color:'#1e1b4b' }}>Market Overview</h1>
           <p className="text-sm mt-0.5" style={{ color:'#64748b' }}>
-            {stocks.length} companies · {tradingDate===todayNPT?'Today':'Last session'} · {tradingDate}
+            {stocks.length} companies · {tradingDate === todayNPT ? 'Today' : isWeekend ? 'Last session' : 'Last session'} · {tradingDate}
           </p>
         </div>
-        {tradingDate && tradingDate!==todayNPT && (
+        {showClosedBanner && (
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium"
             style={{ background:'#fffbeb', border:'1px solid #fde68a', color:'#92400e' }}>
             ⚠ Market closed — showing {tradingDate}
@@ -159,11 +176,11 @@ export default function DashboardPage() {
       {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label:'Total Turnover',   value:Cr(totalTurn),                                    sub:`${stocks.length} companies`,  accent:'#4338ca' },
-          { label:'Gainers',          value:String(gainers.length),                           sub:`${Cr(gainTurn)} turnover`,     accent:'#16a34a' },
-          { label:'Losers',           value:String(losers.length),                            sub:`${Cr(lossTurn)} turnover`,     accent:'#dc2626' },
-          { label:'Market Sentiment', value:`${avgChange>=0?'+':''}${avgChange.toFixed(2)}%`, sub:`${neutral.length} unchanged`,  accent:avgChange>=0?'#16a34a':'#dc2626' },
-        ].map(({label,value,sub,accent})=>(
+          { label:'Total Turnover',   value:toCrore(totalTurn),                             sub:`${stocks.length} companies`,     accent:'#4338ca' },
+          { label:'Gainers',          value:String(gainers.length),                          sub:`${toCrore(gainTurn)} turnover`,  accent:'#16a34a' },
+          { label:'Losers',           value:String(losers.length),                           sub:`${toCrore(lossTurn)} turnover`,  accent:'#dc2626' },
+          { label:'Market Sentiment', value:`${avgChange >= 0?'+':''}${avgChange.toFixed(2)}%`, sub:`${neutral.length} unchanged`, accent:avgChange>=0?'#16a34a':'#dc2626' },
+        ].map(({ label, value, sub, accent }) => (
           <div key={label} className="bg-white rounded-xl border p-5" style={{ borderColor:'#e2e8f0' }}>
             <p className="text-xs font-medium uppercase tracking-wide mb-2" style={{ color:'#64748b' }}>{label}</p>
             <p className="text-2xl font-bold" style={{ color:accent }}>{value}</p>
@@ -172,24 +189,70 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {/* Market trend line chart */}
+      {dailySummary.length > 1 && (
+        <div className="bg-white rounded-xl border p-5" style={{ borderColor:'#e2e8f0' }}>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div>
+              <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>Market Trend — Last {dailySummary.length} Sessions</h2>
+              <p className="text-xs mt-0.5" style={{ color:'#94a3b8' }}>Daily avg change %, gainers vs losers</p>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={180}>
+            <ComposedChart data={dailySummary} margin={{top:4,right:4,left:0,bottom:0}}>
+              <defs>
+                <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#4338ca" stopOpacity={0.12}/>
+                  <stop offset="95%" stopColor="#4338ca" stopOpacity={0}/>
+                </linearGradient>
+                <linearGradient id="gainGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#16a34a" stopOpacity={0.1}/>
+                  <stop offset="95%" stopColor="#16a34a" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
+              <XAxis dataKey="trading_date" tick={{fill:'#94a3b8',fontSize:9}} tickLine={false} axisLine={false} interval="preserveStartEnd"/>
+              <YAxis yAxisId="pct" tick={{fill:'#94a3b8',fontSize:9}} tickLine={false} axisLine={false} width={36} tickFormatter={v=>`${v}%`}/>
+              <YAxis yAxisId="count" orientation="right" tick={{fill:'#94a3b8',fontSize:9}} tickLine={false} axisLine={false} width={32}/>
+              <ReTooltip
+                contentStyle={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,fontSize:11}}
+                formatter={(v, n) => [typeof v === 'number' ? (n==='Avg Change' ? `${v.toFixed(2)}%` : String(v)) : String(v ?? ''), n]}
+                labelFormatter={l => String(l ?? '')}
+              />
+              <Area yAxisId="pct" type="monotone" dataKey="avg_change_pct" name="Avg Change" stroke="#4338ca" strokeWidth={2} fill="url(#trendGrad)" dot={false} activeDot={{r:3}}/>
+              <Line yAxisId="count" type="monotone" dataKey="gainers" name="Gainers" stroke="#16a34a" strokeWidth={1.5} dot={false} strokeDasharray="4 2"/>
+              <Line yAxisId="count" type="monotone" dataKey="losers"  name="Losers"  stroke="#dc2626" strokeWidth={1.5} dot={false} strokeDasharray="4 2"/>
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div className="flex items-center gap-5 mt-2 justify-end">
+            {[['#4338ca','Avg Change %'],['#16a34a','Gainers'],['#dc2626','Losers']].map(([c,l])=>(
+              <div key={l} className="flex items-center gap-1.5 text-xs" style={{ color:'#64748b' }}>
+                <span className="w-5 h-0.5 inline-block" style={{ background:String(c) }}/>
+                {l}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Charts row */}
       <div className="grid lg:grid-cols-3 gap-4">
-        {/* Sector pie */}
+        {/* Sector distribution pie */}
         <div className="bg-white rounded-xl border p-5" style={{ borderColor:'#e2e8f0' }}>
           <h2 className="text-sm font-semibold mb-3" style={{ color:'#1e1b4b' }}>Sector Distribution</h2>
           <ResponsiveContainer width="100%" height={200}>
             <PieChart>
               <Pie data={sectorStats} dataKey="count" nameKey="sec" cx="50%" cy="50%"
-                innerRadius={45} outerRadius={80} labelLine={false} label={PieLabel}>
-                {sectorStats.map((s,i)=><Cell key={s.sec} fill={s.color}/>)}
+                innerRadius={45} outerRadius={80} labelLine={false} label={PiePct}>
+                {sectorStats.map(s => <Cell key={s.sec} fill={s.color} />)}
               </Pie>
-              <ReTooltip content={<PieTip/>}/>
+              <ReTooltip content={<SectorTip />} />
             </PieChart>
           </ResponsiveContainer>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 max-h-28 overflow-y-auto">
-            {sectorStats.slice(0,10).map(s=>(
+            {sectorStats.slice(0, 10).map(s => (
               <div key={s.sec} className="flex items-center gap-1.5 text-xs truncate" style={{ color:'#475569' }}>
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ background:s.color }}/>
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background:s.color }} />
                 <span className="truncate">{s.sec.split(' ').slice(0,2).join(' ')}</span>
               </div>
             ))}
@@ -205,15 +268,15 @@ export default function DashboardPage() {
                 { name:'Gainers', value:gainers.length, turn:gainTurn },
                 { name:'Losers',  value:losers.length,  turn:lossTurn },
                 { name:'Neutral', value:neutral.length,  turn:0 },
-              ]} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={50} outerRadius={80} labelLine={false} label={PieLabel}>
+              ]} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={50} outerRadius={80} labelLine={false} label={PiePct}>
                 <Cell fill="#16a34a"/><Cell fill="#dc2626"/><Cell fill="#94a3b8"/>
               </Pie>
-              <ReTooltip formatter={(v:any,n:any)=>[`${v} companies`,n]}
+              <ReTooltip formatter={(v, n) => [`${v ?? 0} companies`, String(n)]}
                 contentStyle={{ background:'white', border:'1px solid #e2e8f0', borderRadius:8, fontSize:12 }}/>
             </PieChart>
           </ResponsiveContainer>
           <div className="flex justify-center gap-5 mt-2">
-            {[['#16a34a','Gainers',gainers.length],['#dc2626','Losers',losers.length],['#94a3b8','Neutral',neutral.length]].map(([c,l,v])=>(
+            {[['#16a34a','Gainers',gainers.length],['#dc2626','Losers',losers.length],['#94a3b8','Neutral',neutral.length]].map(([c,l,v]) => (
               <div key={String(l)} className="flex items-center gap-1.5 text-xs" style={{ color:'#475569' }}>
                 <span className="w-2 h-2 rounded-full" style={{ background:String(c) }}/>
                 {l}: <span className="font-semibold" style={{ color:'#0f172a' }}>{v}</span>
@@ -222,21 +285,21 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Top 10 turnover bar */}
+        {/* Top 10 turnover */}
         <div className="bg-white rounded-xl border p-5" style={{ borderColor:'#e2e8f0' }}>
           <h2 className="text-sm font-semibold mb-3" style={{ color:'#1e1b4b' }}>Top 10 by Turnover</h2>
           <ResponsiveContainer width="100%" height={230}>
-            <BarChart data={[...stocks].sort((a,b)=>b.turnover-a.turnover).slice(0,10)}
+            <BarChart data={[...stocks].sort((a,b) => toNum(b.turnover)-toNum(a.turnover)).slice(0,10)}
               layout="vertical" margin={{top:0,right:8,left:0,bottom:0}}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false}/>
               <XAxis type="number" tick={{fill:'#94a3b8',fontSize:9}} tickLine={false} axisLine={false}
-                tickFormatter={v=>`${(v/1e7).toFixed(1)}Cr`}/>
+                tickFormatter={v => `${(v/1e7).toFixed(1)}Cr`}/>
               <YAxis type="category" dataKey="symbol" tick={{fill:'#475569',fontSize:10}} tickLine={false} axisLine={false} width={48}/>
-              <ReTooltip formatter={(v:any)=>[`Rs.${Number(v).toLocaleString()}`,'Turnover']}
+              <ReTooltip formatter={(v) => [`Rs.${Number(v ?? 0).toLocaleString()}`, 'Turnover']}
                 contentStyle={{ background:'white', border:'1px solid #e2e8f0', borderRadius:8, fontSize:11 }}/>
               <Bar dataKey="turnover" radius={[0,3,3,0]}>
-                {[...stocks].sort((a,b)=>b.turnover-a.turnover).slice(0,10).map((s,i)=>(
-                  <Cell key={s.symbol} fill={s.percent_change>=0?'#4338ca':'#7c3aed'} fillOpacity={1-i*0.06}/>
+                {[...stocks].sort((a,b) => toNum(b.turnover)-toNum(a.turnover)).slice(0,10).map((s,i) => (
+                  <Cell key={s.symbol} fill={toNum(s.change_percent)>=0?'#4338ca':'#7c3aed'} fillOpacity={1-i*0.06}/>
                 ))}
               </Bar>
             </BarChart>
@@ -244,46 +307,52 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Pie / Range toggle panel */}
+      {/* Sector / Range toggle */}
       <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor:'#e2e8f0' }}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b" style={{ borderColor:'#f1f5f9' }}>
           <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>
-            {activeChart==='pie' ? 'Sector Turnover Share' : 'Top 15 — Price Range (High–Low)'}
+            {activeChart === 'pie' ? 'Sector Turnover Share' : 'Top 15 — Price Range (High–Low)'}
           </h2>
           <div className="flex gap-2">
-            {([['pie','Pie'],['bar','Range']] as const).map(([k,l])=>(
-              <button key={k} onClick={()=>setActiveChart(k)}
+            {(['pie','bar'] as const).map(k => (
+              <button key={k} onClick={() => setActiveChart(k)}
                 className="text-xs px-2.5 py-1 rounded-md border font-medium transition-all"
                 style={{ background:activeChart===k?'#eef2ff':'white', color:activeChart===k?'#4338ca':'#64748b', borderColor:activeChart===k?'#c7d2fe':'#e2e8f0', cursor:'pointer' }}>
-                {l}
+                {k === 'pie' ? 'Pie' : 'Range'}
               </button>
             ))}
           </div>
         </div>
         <div className="p-5">
-          {activeChart==='pie' && (
+          {activeChart === 'pie' && (
             <ResponsiveContainer width="100%" height={260}>
               <PieChart>
                 <Pie data={sectorStats} dataKey="turn" nameKey="sec" cx="50%" cy="50%"
-                  innerRadius={60} outerRadius={110} labelLine={false} label={PieLabel}>
-                  {sectorStats.map(s=><Cell key={s.sec} fill={s.color}/>)}
+                  innerRadius={60} outerRadius={110} labelLine={false} label={PiePct}>
+                  {sectorStats.map(s => <Cell key={s.sec} fill={s.color}/>)}
                 </Pie>
-                <ReTooltip content={<PieTip/>}/>
+                <ReTooltip content={<SectorTip />}/>
               </PieChart>
             </ResponsiveContainer>
           )}
-          {activeChart==='bar' && (
+          {activeChart === 'bar' && (
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={rangeData} margin={{top:4,right:4,left:0,bottom:20}}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
                 <XAxis dataKey="symbol" tick={{fill:'#94a3b8',fontSize:10}} tickLine={false} axisLine={false} angle={-35} textAnchor="end" interval={0}/>
-                <YAxis tick={{fill:'#94a3b8',fontSize:10}} tickLine={false} axisLine={false} tickFormatter={v=>`Rs.${v}`} width={55}/>
-                <ReTooltip formatter={(_:any,__:any,p:any)=>[`H: Rs.${p.payload.high} / L: Rs.${p.payload.low}`,'Range']}
-                  contentStyle={{ background:'white', border:'1px solid #e2e8f0', borderRadius:8, fontSize:11 }}/>
+                <YAxis tick={{fill:'#94a3b8',fontSize:10}} tickLine={false} axisLine={false} tickFormatter={v => `Rs.${v}`} width={55}/>
+                <ReTooltip content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null
+                    const d = payload[0]?.payload as { high: number; low: number } | undefined
+                    if (!d) return null
+                    return (
+                      <div style={{ background:'white', border:'1px solid #e2e8f0', borderRadius:8, padding:'6px 10px', fontSize:11 }}>
+                        <p style={{ color:'#64748b' }}>H: Rs.{d.high} / L: Rs.{d.low}</p>
+                      </div>
+                    )
+                  }}/>
                 <Bar dataKey="range" radius={[3,3,0,0]}>
-                  {rangeData.map(d=>(
-                    <Cell key={d.symbol} fill={d.up?'#4338ca':'#dc2626'}/>
-                  ))}
+                  {rangeData.map(d => <Cell key={d.symbol} fill={d.up?'#4338ca':'#dc2626'}/>)}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -293,43 +362,38 @@ export default function DashboardPage() {
 
       {/* Gainers + Losers */}
       <div className="grid md:grid-cols-2 gap-4">
-        {[
-          { title:'Top Gainers', data:gainers.slice(0,10) },
-          { title:'Top Losers',  data:losers.slice(0,10)  },
-        ].map(({title,data})=>(
+        {[{ title:'Top Gainers', data:gainers.slice(0,10) }, { title:'Top Losers', data:losers.slice(0,10) }].map(({ title, data }) => (
           <div key={title} className="bg-white rounded-xl border overflow-hidden" style={{ borderColor:'#e2e8f0' }}>
             <div className="px-5 py-3.5 border-b flex items-center justify-between" style={{ borderColor:'#f1f5f9' }}>
               <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>{title}</h2>
               <span className="text-xs" style={{ color:'#94a3b8' }}>{tradingDate}</span>
             </div>
-            {data.length===0
-              ? <p className="p-8 text-center text-sm" style={{ color:'#94a3b8' }}>No data</p>
-              : <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-xs font-medium border-b" style={{ background:'#f8fafc', borderColor:'#f1f5f9', color:'#64748b' }}>
-                      <th className="text-left px-5 py-2">Symbol</th>
-                      <th className="text-left px-4 py-2">Company</th>
-                      <th className="text-right px-5 py-2">Price</th>
-                      <th className="text-right px-5 py-2">Change</th>
+            {data.length === 0 ? <p className="p-8 text-center text-sm" style={{ color:'#94a3b8' }}>No data</p> : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs font-medium border-b" style={{ background:'#f8fafc', borderColor:'#f1f5f9', color:'#64748b' }}>
+                    <th className="text-left px-5 py-2">Symbol</th>
+                    <th className="text-left px-4 py-2">Company</th>
+                    <th className="text-right px-5 py-2">Price</th>
+                    <th className="text-right px-5 py-2">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.map(s => (
+                    <tr key={s.symbol} className="border-b transition-colors" style={{ borderColor:'#f8fafc' }}
+                      onMouseOver={e => (e.currentTarget as HTMLElement).style.background = '#f8fafc'}
+                      onMouseOut={e  => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+                      <td className="px-5 py-2.5">
+                        <Link href={`/dashboard/stock/${s.symbol}`} style={{ color:'#4338ca', fontWeight:700, textDecoration:'none' }}>{s.symbol}</Link>
+                      </td>
+                      <td className="px-4 py-2.5 max-w-[120px] truncate text-xs" style={{ color:'#94a3b8' }}>{s.company_name}</td>
+                      <td className="px-5 py-2.5 text-right text-xs font-semibold" style={{ color:'#0f172a', fontFamily:'monospace' }}>{Rs(toNum(s.close_price))}</td>
+                      <td className="px-5 py-2.5 text-right"><Badge v={toNum(s.change_percent)}/></td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {data.map(s=>(
-                      <tr key={s.symbol} className="border-b transition-colors" style={{ borderColor:'#f8fafc' }}
-                        onMouseOver={e=>(e.currentTarget as HTMLElement).style.background='#f8fafc'}
-                        onMouseOut={e=>(e.currentTarget as HTMLElement).style.background='transparent'}>
-                        <td className="px-5 py-2.5">
-                          <Link href={`/dashboard/stock/${s.symbol}`}
-                            style={{ color:'#4338ca', fontWeight:700, textDecoration:'none' }}>{s.symbol}</Link>
-                        </td>
-                        <td className="px-4 py-2.5 max-w-[120px] truncate text-xs" style={{ color:'#94a3b8' }}>{s.name}</td>
-                        <td className="px-5 py-2.5 text-right text-xs font-semibold" style={{ color:'#0f172a', fontFamily:'monospace' }}>{Rs(s.close_price)}</td>
-                        <td className="px-5 py-2.5 text-right"><Badge v={s.percent_change}/></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-            }
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         ))}
       </div>
@@ -337,26 +401,24 @@ export default function DashboardPage() {
       {/* Sector table */}
       <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor:'#e2e8f0' }}>
         <div className="px-5 py-3.5 border-b" style={{ borderColor:'#f1f5f9' }}>
-          <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>
-            Sector Breakdown <span className="text-xs font-normal ml-1" style={{ color:'#94a3b8' }}>· click to filter companies below</span>
-          </h2>
+          <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>Sector Breakdown <span className="text-xs font-normal ml-1" style={{ color:'#94a3b8' }}>· click to filter</span></h2>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs font-medium border-b" style={{ background:'#f8fafc', borderColor:'#e2e8f0', color:'#64748b' }}>
-                {['Sector','Companies','Gainers','Losers','Avg Change','Turnover'].map(h=>(
+                {['Sector','Companies','Gainers','Losers','Avg Change','Turnover'].map(h => (
                   <th key={h} className="text-left px-5 py-2.5">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {sectorStats.map(s=>(
+              {sectorStats.map(s => (
                 <tr key={s.sec} className="border-b cursor-pointer transition-colors"
                   style={{ borderColor:'#f8fafc', background:sectorFilter===s.sec?'#eef2ff':'transparent' }}
-                  onClick={()=>setSectorFilter(sectorFilter===s.sec?'all':s.sec)}
-                  onMouseOver={e=>{ if(sectorFilter!==s.sec)(e.currentTarget as HTMLElement).style.background='#f8fafc' }}
-                  onMouseOut={e=>{ if(sectorFilter!==s.sec)(e.currentTarget as HTMLElement).style.background='transparent' }}>
+                  onClick={() => setSectorFilter(sectorFilter === s.sec ? 'all' : s.sec)}
+                  onMouseOver={e => { if(sectorFilter!==s.sec)(e.currentTarget as HTMLElement).style.background='#f8fafc' }}
+                  onMouseOut={e  => { if(sectorFilter!==s.sec)(e.currentTarget as HTMLElement).style.background='transparent' }}>
                   <td className="px-5 py-2.5 font-medium" style={{ color:sectorFilter===s.sec?'#4338ca':'#0f172a' }}>
                     <div className="flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background:s.color }}/>
@@ -367,9 +429,9 @@ export default function DashboardPage() {
                   <td className="px-5 py-2.5 font-medium" style={{ color:'#16a34a' }}>{s.g}</td>
                   <td className="px-5 py-2.5 font-medium" style={{ color:'#dc2626' }}>{s.l}</td>
                   <td className="px-5 py-2.5 font-semibold text-xs" style={{ color:s.avg>=0?'#16a34a':'#dc2626', fontFamily:'monospace' }}>
-                    {s.avg>=0?'+':''}{s.avg.toFixed(2)}%
+                    {s.avg >= 0?'+':''}{s.avg.toFixed(2)}%
                   </td>
-                  <td className="px-5 py-2.5 text-xs" style={{ color:'#64748b', fontFamily:'monospace' }}>{Cr(s.turn)}</td>
+                  <td className="px-5 py-2.5 text-xs" style={{ color:'#64748b', fontFamily:'monospace' }}>{toCrore(s.turn)}</td>
                 </tr>
               ))}
             </tbody>
@@ -377,21 +439,21 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* All companies */}
+      {/* All companies table */}
       <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor:'#e2e8f0' }}>
         <div className="flex items-center justify-between px-5 py-3.5 border-b flex-wrap gap-3" style={{ borderColor:'#f1f5f9' }}>
           <div className="flex items-center gap-3">
             <h2 className="text-sm font-semibold" style={{ color:'#1e1b4b' }}>All Companies</h2>
-            <select value={sectorFilter} onChange={e=>setSectorFilter(e.target.value)}
+            <select value={sectorFilter} onChange={e => setSectorFilter(e.target.value)}
               className="text-xs rounded-md px-2 py-1 outline-none"
               style={{ border:'1px solid #e2e8f0', color:'#475569', background:'white' }}>
               <option value="all">All Sectors</option>
-              {sectors.map(s=><option key={s} value={s}>{s}</option>)}
+              {sectors.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
           <div className="flex gap-2">
-            {(['turnover','change','volume'] as const).map(c=>(
-              <button key={c} onClick={()=>setSortCol(c)}
+            {(['turnover','change','volume'] as const).map(c => (
+              <button key={c} onClick={() => setSortCol(c)}
                 className="text-xs px-2.5 py-1 rounded-md font-medium transition-all"
                 style={{ background:sortCol===c?'#eef2ff':'white', color:sortCol===c?'#4338ca':'#64748b', border:`1px solid ${sortCol===c?'#c7d2fe':'#e2e8f0'}`, cursor:'pointer' }}>
                 {c.charAt(0).toUpperCase()+c.slice(1)}
@@ -403,34 +465,34 @@ export default function DashboardPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs font-medium border-b" style={{ background:'#f8fafc', borderColor:'#e2e8f0', color:'#64748b' }}>
-                {['Symbol','Company','Sector','Open','High','Low','Close','Change','Volume','Turnover'].map(h=>(
+                {['Symbol','Company','Sector','Open','High','Low','Close','Change','Volume','Turnover'].map(h => (
                   <th key={h} className="text-left px-4 py-2.5 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.map(s=>(
+              {filtered.map(s => (
                 <tr key={s.symbol} className="border-b cursor-pointer transition-colors" style={{ borderColor:'#f8fafc' }}
-                  onClick={()=>window.location.href=`/dashboard/stock/${s.symbol}`}
-                  onMouseOver={e=>(e.currentTarget as HTMLElement).style.background='#f8fafc'}
-                  onMouseOut={e=>(e.currentTarget as HTMLElement).style.background='transparent'}>
+                  onClick={() => window.location.href = `/dashboard/stock/${s.symbol}`}
+                  onMouseOver={e => (e.currentTarget as HTMLElement).style.background = '#f8fafc'}
+                  onMouseOut={e  => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
                   <td className="px-4 py-2.5">
-                    <Link href={`/dashboard/stock/${s.symbol}`} onClick={e=>e.stopPropagation()}
+                    <Link href={`/dashboard/stock/${s.symbol}`} onClick={e => e.stopPropagation()}
                       style={{ color:'#4338ca', fontWeight:700, textDecoration:'none' }}>{s.symbol}</Link>
                   </td>
-                  <td className="px-4 py-2.5 max-w-[150px] truncate" style={{ color:'#475569' }}>{s.name}</td>
+                  <td className="px-4 py-2.5 max-w-[150px] truncate" style={{ color:'#475569' }}>{s.company_name}</td>
                   <td className="px-4 py-2.5">
                     <span className="text-xs px-2 py-0.5 rounded-full" style={{ background:'#eef2ff', color:'#4338ca', border:'1px solid #c7d2fe' }}>
-                      {s.sector.split(' ').slice(0,2).join(' ')}
+                      {s.sector_name.split(' ').slice(0,2).join(' ')}
                     </span>
                   </td>
-                  <td className="px-4 py-2.5 text-xs" style={{ color:'#64748b',fontFamily:'monospace' }}>{s.open_price.toFixed(2)}</td>
-                  <td className="px-4 py-2.5 text-xs font-medium" style={{ color:'#16a34a',fontFamily:'monospace' }}>{s.high_price.toFixed(2)}</td>
-                  <td className="px-4 py-2.5 text-xs font-medium" style={{ color:'#dc2626',fontFamily:'monospace' }}>{s.low_price.toFixed(2)}</td>
-                  <td className="px-4 py-2.5 text-xs font-semibold" style={{ color:'#0f172a',fontFamily:'monospace' }}>{s.close_price.toFixed(2)}</td>
-                  <td className="px-4 py-2.5"><Badge v={s.percent_change}/></td>
-                  <td className="px-4 py-2.5 text-xs" style={{ color:'#64748b',fontFamily:'monospace' }}>{s.volume.toLocaleString()}</td>
-                  <td className="px-4 py-2.5 text-xs" style={{ color:'#64748b',fontFamily:'monospace' }}>Rs.{(s.turnover/1e6).toFixed(2)}M</td>
+                  <td className="px-4 py-2.5 text-xs" style={{ color:'#64748b',fontFamily:'monospace' }}>{toNum(s.open_price).toFixed(2)}</td>
+                  <td className="px-4 py-2.5 text-xs font-medium" style={{ color:'#16a34a',fontFamily:'monospace' }}>{toNum(s.high_price).toFixed(2)}</td>
+                  <td className="px-4 py-2.5 text-xs font-medium" style={{ color:'#dc2626',fontFamily:'monospace' }}>{toNum(s.low_price).toFixed(2)}</td>
+                  <td className="px-4 py-2.5 text-xs font-semibold" style={{ color:'#0f172a',fontFamily:'monospace' }}>{toNum(s.close_price).toFixed(2)}</td>
+                  <td className="px-4 py-2.5"><Badge v={toNum(s.change_percent)}/></td>
+                  <td className="px-4 py-2.5 text-xs" style={{ color:'#64748b',fontFamily:'monospace' }}>{toNum(s.volume).toLocaleString()}</td>
+                  <td className="px-4 py-2.5 text-xs" style={{ color:'#64748b',fontFamily:'monospace' }}>Rs.{(toNum(s.turnover)/1e6).toFixed(2)}M</td>
                 </tr>
               ))}
             </tbody>

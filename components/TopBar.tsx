@@ -1,188 +1,210 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { signOut } from 'next-auth/react'
 
-// NEPSE market status — trades Sun–Thu 11:00–15:00 NPT (UTC+5:45)
+/* ─── Types ──────────────────────────────────────────────── */
+interface TopBarUser {
+  name?: string | null
+  email?: string | null
+  image?: string | null
+}
+
+type StartupStatus = 'idle' | 'checking' | 'running' | 'done' | 'already' | 'no_pipeline' | 'error'
+
+interface StartupState {
+  status: StartupStatus
+  message?: string
+  inserted?: number
+}
+
+/* ─── Helpers ────────────────────────────────────────────── */
+/** Returns current time in Nepal time (UTC+5:45) */
+function nptNow() {
+  return new Date(Date.now() + (5 * 60 + 45) * 60 * 1000)
+}
+
+/* ─── Market open/closed badge ───────────────────────────── */
 function MarketBadge() {
-  const [label, setLabel] = useState('')
-  const [open,  setOpen]  = useState(false)
+  const [open, setOpen] = useState<boolean | null>(null)
 
   useEffect(() => {
-    const npt  = new Date(Date.now() + (5 * 60 + 45) * 60 * 1000)
-    const day  = npt.getUTCDay()
+    const npt = nptNow()
+    const day = npt.getUTCDay()               // 0=Sun … 6=Sat
     const mins = npt.getUTCHours() * 60 + npt.getUTCMinutes()
-    const isOpen = day >= 0 && day <= 4 && mins >= 660 && mins < 900
-    setOpen(isOpen)
-
-    if (!isOpen) {
-      const last = new Date(npt)
-      last.setUTCHours(0, 0, 0, 0)
-      while (last.getUTCDay() === 5 || last.getUTCDay() === 6) {
-        last.setUTCDate(last.getUTCDate() - 1)
-      }
-      setLabel(`Closed · ${last.toLocaleDateString('en-NP', { month:'short', day:'numeric' })}`)
-    } else {
-      setLabel('Market Open')
-    }
+    // NEPSE trades Sun–Thu, 11:00–15:00 NPT
+    setOpen(day >= 0 && day <= 4 && mins >= 11 * 60 && mins < 15 * 60)
   }, [])
 
-  if (!label) return null
+  if (open === null) return null
+
   return (
-    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium"
-      style={{
-        background:  open ? '#f0fdf4' : '#f8fafc',
-        border:      open ? '1px solid #bbf7d0' : '1px solid #e2e8f0',
-        color:       open ? '#16a34a' : '#64748b',
-      }}>
-      <span className="w-1.5 h-1.5 rounded-full" style={{ background: open ? '#22c55e' : '#94a3b8' }}/>
-      {label}
+    <div
+      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
+        open
+          ? 'bg-green-50 border-green-200 text-green-700'
+          : 'bg-slate-100 border-slate-200 text-slate-500'
+      }`}
+    >
+      <span className="relative flex h-2 w-2">
+        {open && (
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+        )}
+        <span className={`relative inline-flex rounded-full h-2 w-2 ${open ? 'bg-green-500' : 'bg-slate-400'}`} />
+      </span>
+      {open ? 'Market Open' : 'Market Closed'}
     </div>
   )
 }
 
-type StartupStatus = 'idle' | 'loading' | 'done' | 'already_has_data' | 'no_loader'
+/* ─── Startup banner ─────────────────────────────────────── */
+const BANNER_MESSAGES: Record<string, string> = {
+  checking:    'Checking database…',
+  running:     'Loading data into MySQL…',
+  no_pipeline: '',   // set dynamically
+}
 
-export default function TopBar({ user }: { user?: any }) {
-  const router   = useRouter()
-  const [q, setQ]             = useState('')
-  const [status, setStatus]   = useState<StartupStatus>('idle')
-  const [rows,   setRows]     = useState(0)
-  const [loaderMsg, setLoaderMsg] = useState('')
-  const pollRef = useRef<NodeJS.Timeout | null>(null)
+function StartupBanner({ startup }: { startup: StartupState }) {
+  const { status, inserted, message } = startup
 
-  // Poll /api/startup until done
-  const poll = async () => {
-    try {
-      const res  = await fetch('/api/startup')
-      const data = await res.json()
+  const colorClass =
+    status === 'no_pipeline'
+      ? 'bg-amber-50 border-amber-200 text-amber-700'
+      : status === 'done'
+      ? 'bg-green-50 border-green-200 text-green-700'
+      : 'bg-blue-50 border-blue-200 text-blue-700'
 
-      if (data.status === 'loading') {
-        // Still running — poll again in 4 seconds
-        setStatus('loading')
-        pollRef.current = setTimeout(poll, 4000)
-      } else if (data.status === 'done') {
-        setStatus('done'); setRows(data.rows ?? 0)
-        setTimeout(() => setStatus('already_has_data'), 6000)
-      } else if (data.status === 'already_has_data' || data.status === 'already_done') {
-        setStatus('already_has_data')
-      } else if (data.status === 'no_loader') {
-        setStatus('no_loader'); setLoaderMsg(data.message ?? '')
-        setTimeout(() => setStatus('already_has_data'), 12000)
-      } else {
-        setStatus('already_has_data')
-      }
-    } catch {
-      // Network error — retry in 5s
-      pollRef.current = setTimeout(poll, 5000)
-    }
-  }
+  const text =
+    status === 'done'
+      ? `Loaded ${inserted?.toLocaleString()} rows into MySQL`
+      : status === 'no_pipeline'
+      ? `Pipeline not found: ${message}`
+      : BANNER_MESSAGES[status] ?? ''
 
+  return (
+    <div className={`px-6 py-2 text-xs flex items-center gap-3 border-b ${colorClass}`}>
+      {(status === 'checking' || status === 'running') && (
+        <svg className="animate-spin w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity={0.25} />
+          <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity={0.75} />
+        </svg>
+      )}
+      {status === 'done'        && <span>✓</span>}
+      {status === 'no_pipeline' && <span>⚠</span>}
+      <span>{text}</span>
+    </div>
+  )
+}
+
+/* ════════════════════════════════════════════════════════════
+   TOP BAR
+════════════════════════════════════════════════════════════ */
+export default function TopBar({ user }: { user?: TopBarUser }) {
+  const router  = useRouter()
+  const [startup, setStartup] = useState<StartupState>({ status: 'idle' })
+  const [query,   setQuery]   = useState('')
+
+  /* One-time startup check per browser session */
   useEffect(() => {
-    const key = `nepse_startup_${new Date().toDateString()}`
-    if (sessionStorage.getItem(key)) { setStatus('already_has_data'); return }
+    const alreadyRan = sessionStorage.getItem('nepse_startup_ran')
+    if (alreadyRan) {
+      setStartup({ status: 'already' })
+      return
+    }
 
-    setStatus('loading')
-    poll()
+    setStartup({ status: 'checking' })
 
-    return () => { if (pollRef.current) clearTimeout(pollRef.current) }
+    fetch('/api/startup')
+      .then(r => r.json())
+      .then((d: { status?: string; inserted?: number; message?: string }) => {
+        sessionStorage.setItem('nepse_startup_ran', '1')
+
+        if (d.status === 'already_done' || d.status === 'already_has_data') {
+          setStartup({ status: 'already' })
+        } else if (d.status === 'done') {
+          setStartup({ status: 'done', inserted: d.inserted })
+          setTimeout(() => setStartup({ status: 'already' }), 5000)
+        } else if (d.status === 'no_loader') {
+          setStartup({ status: 'no_pipeline', message: d.message })
+        } else {
+          setStartup({ status: 'already' })
+        }
+      })
+      .catch(() => setStartup({ status: 'already' }))
   }, [])
-
-  // Mark done in sessionStorage so we don't re-check today
-  useEffect(() => {
-    if (status === 'already_has_data') {
-      sessionStorage.setItem(`nepse_startup_${new Date().toDateString()}`, '1')
-    }
-  }, [status])
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault()
-    if (q.trim()) {
-      router.push(`/dashboard/search?q=${encodeURIComponent(q.trim().toUpperCase())}`)
-      setQ('')
-    }
+    const q = query.trim()
+    if (q) router.push(`/dashboard/search?q=${encodeURIComponent(q.toUpperCase())}`)
   }
 
-  const showBanner = status === 'loading' || status === 'done' || status === 'no_loader'
+  const showBanner = ['checking', 'running', 'done', 'no_pipeline'].includes(startup.status)
+  const displayName = user?.name ?? user?.email ?? null
 
   return (
     <>
-      {/* Data loading banner */}
-      {showBanner && (
-        <div className="flex items-center gap-3 px-5 py-2 text-xs border-b"
-          style={{
-            background:  status === 'done'      ? '#f0fdf4'
-                       : status === 'no_loader' ? '#fffbeb'
-                       : '#eff6ff',
-            borderColor: status === 'done'      ? '#bbf7d0'
-                       : status === 'no_loader' ? '#fde68a'
-                       : '#bfdbfe',
-            color:       status === 'done'      ? '#15803d'
-                       : status === 'no_loader' ? '#92400e'
-                       : '#1d4ed8',
-          }}>
-          {status === 'loading' && (
-            <svg className="animate-spin w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-          )}
-          {status === 'done'      && <span>✓</span>}
-          {status === 'no_loader' && <span>⚠</span>}
-          <span>
-            {status === 'loading'   && 'Loading 30 days of NEPSE data via load_history.py — this runs once in the background…'}
-            {status === 'done'      && `Data ready — ${rows.toLocaleString()} rows loaded into MySQL.`}
-            {status === 'no_loader' && loaderMsg}
-          </span>
-        </div>
-      )}
+      {showBanner && <StartupBanner startup={startup} />}
 
-      {/* Header */}
-      <header className="flex items-center gap-4 px-5 py-3 border-b bg-white"
-        style={{ borderColor: '#e2e8f0' }}>
+      <header
+        className="flex items-center justify-between border-b px-6 py-3 gap-4"
+        style={{ borderColor: '#e2e8f0', background: 'white' }}
+      >
+        {/* Brand */}
+        <div className="shrink-0">
+          <h1 className="text-base font-bold" style={{ color: '#1e1b4b' }}>NEPSE Dashboard</h1>
+          <p className="text-[10px]" style={{ color: '#94a3b8' }}>Nepal Stock Exchange · MySQL</p>
+        </div>
 
         {/* Search */}
         <form onSubmit={handleSearch} className="flex-1 max-w-sm">
           <div className="relative">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
-              style={{ color: '#94a3b8' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg
+              className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none"
+              style={{ color: '#94a3b8' }}
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            <input value={q} onChange={e => setQ(e.target.value)}
-              placeholder="Search symbol or company…"
-              className="w-full pl-9 pr-3 py-1.5 text-sm rounded-lg outline-none transition-all"
-              style={{ background: '#f8fafc', border: '1px solid #e2e8f0', color: '#0f172a' }}
-              onFocus={e => { e.target.style.borderColor = '#93c5fd'; e.target.style.background = 'white' }}
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search symbol or company… (Enter)"
+              className="w-full pl-8 pr-3 py-2 text-xs rounded-lg outline-none transition-colors"
+              style={{ border: '1px solid #e2e8f0', background: '#f8fafc', color: '#0f172a' }}
+              onFocus={e => { e.target.style.borderColor = '#c7d2fe'; e.target.style.background = 'white' }}
               onBlur={e  => { e.target.style.borderColor = '#e2e8f0'; e.target.style.background = '#f8fafc' }}
             />
           </div>
         </form>
 
-        {/* Right */}
-        <div className="ml-auto flex items-center gap-3">
-          <MarketBadge/>
+        {/* Right side */}
+        <div className="flex items-center gap-3 shrink-0">
+          <MarketBadge />
 
-          {user && (
-            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hidden sm:flex"
-              style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}>
-              <div className="w-6 h-6 rounded-md flex items-center justify-center text-white text-[11px] font-bold"
-                style={{ background: '#2563eb' }}>
-                {(user.name || user.email || 'U')[0].toUpperCase()}
+          {displayName && (
+            <div className="hidden md:flex items-center gap-2">
+              <div
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold"
+                style={{ background: 'linear-gradient(135deg,#4338ca,#6366f1)', color: 'white' }}
+                aria-hidden
+              >
+                {displayName[0].toUpperCase()}
               </div>
-              <span className="text-xs" style={{ color: '#475569' }}>
-                {user.name || user.email}
-              </span>
+              <span className="text-xs" style={{ color: '#475569' }}>{displayName}</span>
             </div>
           )}
 
-          <button onClick={() => signOut({ callbackUrl: '/login' })}
-            className="text-xs px-3 py-1.5 rounded-lg font-medium transition-all"
-            style={{ border: '1px solid #e2e8f0', color: '#64748b', background: 'white', cursor: 'pointer' }}
-            onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = '#fca5a5'; (e.currentTarget as HTMLElement).style.color = '#dc2626' }}
-            onMouseOut={e  => { (e.currentTarget as HTMLElement).style.borderColor = '#e2e8f0'; (e.currentTarget as HTMLElement).style.color = '#64748b' }}>
-            Sign out
+          <button
+            onClick={() => signOut({ callbackUrl: '/login' })}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors"
+            style={{ background: '#dc2626', border: 'none', cursor: 'pointer' }}
+            onMouseOver={e => (e.currentTarget as HTMLElement).style.background = '#b91c1c'}
+            onMouseOut={e  => (e.currentTarget as HTMLElement).style.background = '#dc2626'}
+          >
+            Sign Out
           </button>
         </div>
       </header>

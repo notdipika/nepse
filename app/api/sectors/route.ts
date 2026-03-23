@@ -1,16 +1,18 @@
+/**
+ * app/api/sectors/route.ts
+ * Returns all sectors that have at least one active company.
+ */
 import { NextResponse } from 'next/server'
-import { auth } from '@/lib/auth'
-import nepsePool from '@/lib/db-nepse'
-import { RowDataPacket } from 'mysql2'
+import { getAllSectors } from '@/lib/db'
 
 export const runtime = 'nodejs'
 
 export async function GET() {
-  const session = await auth()
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const [rows] = await nepsePool.query<RowDataPacket[]>(
-    'SELECT sector_id, name FROM sector ORDER BY name ASC'
-  )
-  return NextResponse.json({ sectors: rows })
+  try {
+    const sectors = await getAllSectors()
+    return NextResponse.json({ sectors }, { status: 200 })
+  } catch (err) {
+    console.error('[/api/sectors]', err)
+    return NextResponse.json({ error: 'Failed to load sectors' }, { status: 500 })
+  }
 }

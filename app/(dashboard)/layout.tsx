@@ -3,9 +3,14 @@ import { redirect } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
 import TopBar from '@/components/TopBar'
 
-export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+export default async function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
   const session = await auth()
   if (!session) redirect('/login')
+
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: '#f1f5f9' }}>
       <Sidebar />
@@ -16,3 +21,4 @@ export default async function DashboardLayout({ children }: { children: React.Re
     </div>
   )
 }
+

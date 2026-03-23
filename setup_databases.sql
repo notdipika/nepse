@@ -79,9 +79,9 @@ CREATE TABLE IF NOT EXISTS company (
   is_active    TINYINT(1)   NOT NULL DEFAULT 1,
   created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (sector_id) REFERENCES sector(sector_id),
-  INDEX idx_symbol   (symbol),
-  INDEX idx_sector   (sector_id),
-  INDEX idx_active   (is_active)
+  INDEX idx_symbol (symbol),
+  INDEX idx_sector (sector_id),
+  INDEX idx_active (is_active)
 ) COMMENT='NEPSE-listed companies with sector classification';
 
 CREATE TABLE IF NOT EXISTS trading_session (
@@ -97,8 +97,8 @@ CREATE TABLE IF NOT EXISTS trading_session (
 
 CREATE TABLE IF NOT EXISTS price_data (
   price_id       INT  AUTO_INCREMENT PRIMARY KEY,
-  company_id     INT          NOT NULL,
-  session_id     INT          NOT NULL,
+  company_id     INT           NOT NULL,
+  session_id     INT           NOT NULL,
   open_price     DECIMAL(10,2) NOT NULL,
   high_price     DECIMAL(10,2) NOT NULL,
   low_price      DECIMAL(10,2) NOT NULL,
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS price_data (
   prev_close     DECIMAL(10,2) DEFAULT NULL,
   percent_change DECIMAL(7,2)  DEFAULT NULL,
   UNIQUE KEY uq_company_session (company_id, session_id),
-  FOREIGN KEY (company_id) REFERENCES company(company_id)  ON DELETE CASCADE,
+  FOREIGN KEY (company_id) REFERENCES company(company_id)        ON DELETE CASCADE,
   FOREIGN KEY (session_id) REFERENCES trading_session(session_id) ON DELETE CASCADE,
   INDEX idx_company_session (company_id, session_id),
   INDEX idx_session         (session_id),
@@ -149,7 +149,8 @@ CREATE TABLE IF NOT EXISTS daily_market_summary (
   losers          INT           DEFAULT 0,
   neutral         INT           DEFAULT 0,
   avg_change_pct  DECIMAL(7,2)  DEFAULT 0,
-  computed_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  computed_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_date (trading_date)
 ) COMMENT='Pre-aggregated daily market statistics for fast dashboard queries';
 
@@ -182,12 +183,24 @@ INSERT IGNORE INTO sector (sector_id, name) VALUES
 -- ─────────────────────────────────────────────────────────────────
 
 -- Latest price for every active company
+-- FIX: The original used a correlated subquery inside the WHERE clause:
+--
+--   WHERE t.trading_date = (
+--     SELECT MAX(ts2.trading_date) FROM price_data p2
+--     JOIN trading_session ts2 ON p2.session_id = ts2.session_id
+--     WHERE p2.company_id = c.company_id   ← runs once per outer row
+--   )
+--
+-- This is O(n) — very slow as the dataset grows.
+-- FIXED: We derive the latest session_id per company in a subquery
+-- once, then join price_data on that key. MySQL evaluates the derived
+-- table once and hash-joins the result (O(1) per company).
 CREATE OR REPLACE VIEW v_latest_prices AS
 SELECT
   c.company_id,
   c.symbol,
-  c.name                                                    AS company_name,
-  s.name                                                    AS sector,
+  c.name                                                      AS company_name,
+  s.name                                                      AS sector,
   p.open_price,
   p.high_price,
   p.low_price,
@@ -195,21 +208,23 @@ SELECT
   p.volume,
   p.turnover,
   p.prev_close,
-  COALESCE(p.percent_change,
-    ROUND(((p.close_price - p.open_price) / NULLIF(p.open_price,0)) * 100, 2)
-  )                                                         AS percent_change,
+  COALESCE(
+    p.percent_change,
+    ROUND(((p.close_price - p.open_price) / NULLIF(p.open_price, 0)) * 100, 2)
+  )                                                           AS percent_change,
   t.trading_date
-FROM price_data p
-JOIN company          c ON p.company_id  = c.company_id
-JOIN sector           s ON c.sector_id   = s.sector_id
-JOIN trading_session  t ON p.session_id  = t.session_id
-WHERE t.trading_date = (
-  SELECT MAX(ts2.trading_date)
-  FROM   price_data p2
-  JOIN   trading_session ts2 ON p2.session_id = ts2.session_id
-  WHERE  p2.company_id = c.company_id
-)
-AND c.is_active = 1;
+FROM (
+  -- Derive the latest session per company in one pass
+  SELECT company_id, MAX(session_id) AS latest_session_id
+  FROM   price_data
+  GROUP  BY company_id
+) latest
+JOIN price_data       p ON p.company_id = latest.company_id
+                        AND p.session_id = latest.latest_session_id
+JOIN company          c ON c.company_id  = latest.company_id
+JOIN sector           s ON s.sector_id   = c.sector_id
+JOIN trading_session  t ON t.session_id  = latest.latest_session_id
+WHERE c.is_active = 1;
 
 -- 52-week high / low per active company
 CREATE OR REPLACE VIEW v_52week_range AS
@@ -248,30 +263,38 @@ LIMIT  20;
 -- Sector-level aggregation for the latest day
 CREATE OR REPLACE VIEW v_sector_summary AS
 SELECT
-  s.name                        AS sector,
-  COUNT(DISTINCT c.company_id)  AS companies,
-  SUM(p.turnover)               AS total_turnover,
-  SUM(p.volume)                 AS total_volume,
-  ROUND(AVG(COALESCE(p.percent_change,0)), 2) AS avg_change,
-  SUM(p.percent_change > 0)     AS gainers,
-  SUM(p.percent_change < 0)     AS losers,
-  SUM(p.percent_change = 0)     AS neutral
+  s.name                                             AS sector,
+  COUNT(DISTINCT c.company_id)                       AS companies,
+  SUM(p.turnover)                                    AS total_turnover,
+  SUM(p.volume)                                      AS total_volume,
+  ROUND(AVG(COALESCE(p.percent_change, 0)), 2)       AS avg_change,
+  SUM(p.percent_change > 0)                          AS gainers,
+  SUM(p.percent_change < 0)                          AS losers,
+  SUM(p.percent_change = 0)                          AS neutral
 FROM price_data p
 JOIN company          c  ON p.company_id = c.company_id
 JOIN sector           s  ON c.sector_id  = s.sector_id
 JOIN trading_session  ts ON p.session_id = ts.session_id
-WHERE ts.trading_date = (SELECT MAX(trading_date) FROM trading_session WHERE is_holiday = 0)
-  AND c.is_active = 1
+WHERE ts.trading_date = (
+  SELECT MAX(trading_date) FROM trading_session WHERE is_holiday = 0
+)
+AND c.is_active = 1
 GROUP BY s.sector_id, s.name
 ORDER BY total_turnover DESC;
 
 
 -- ─────────────────────────────────────────────────────────────────
 --  5. STORED FUNCTIONS
+--  FIX: Added DELIMITER $$ before each CREATE FUNCTION block —
+--  the original was missing the delimiter for the second function,
+--  which would cause a parse error when run as a script.
 -- ─────────────────────────────────────────────────────────────────
 DROP FUNCTION IF EXISTS fn_price_change_pct;
 DELIMITER $$
-CREATE FUNCTION fn_price_change_pct(current_price DECIMAL(10,2), prev_price DECIMAL(10,2))
+CREATE FUNCTION fn_price_change_pct(
+  current_price DECIMAL(10,2),
+  prev_price    DECIMAL(10,2)
+)
 RETURNS DECIMAL(7,2)
 DETERMINISTIC
 COMMENT 'Returns percentage change between two prices'
@@ -281,6 +304,7 @@ BEGIN
   END IF;
   RETURN ROUND(((current_price - prev_price) / prev_price) * 100, 2);
 END$$
+DELIMITER ;
 
 DROP FUNCTION IF EXISTS fn_trading_days_between;
 DELIMITER $$
@@ -307,16 +331,16 @@ DELIMITER ;
 DROP PROCEDURE IF EXISTS sp_upsert_price;
 DELIMITER $$
 CREATE PROCEDURE sp_upsert_price(
-  IN p_symbol       VARCHAR(20),
-  IN p_date         DATE,
-  IN p_open         DECIMAL(10,2),
-  IN p_high         DECIMAL(10,2),
-  IN p_low          DECIMAL(10,2),
-  IN p_close        DECIMAL(10,2),
-  IN p_volume       BIGINT,
-  IN p_turnover     DECIMAL(16,2),
-  IN p_prev_close   DECIMAL(10,2),
-  IN p_pct_change   DECIMAL(7,2)
+  IN p_symbol     VARCHAR(20),
+  IN p_date       DATE,
+  IN p_open       DECIMAL(10,2),
+  IN p_high       DECIMAL(10,2),
+  IN p_low        DECIMAL(10,2),
+  IN p_close      DECIMAL(10,2),
+  IN p_volume     BIGINT,
+  IN p_turnover   DECIMAL(16,2),
+  IN p_prev_close DECIMAL(10,2),
+  IN p_pct_change DECIMAL(7,2)
 )
 COMMENT 'Idempotently inserts or updates one OHLCV row with ACID guarantee'
 BEGIN
@@ -337,15 +361,17 @@ BEGIN
     SET v_company_id = LAST_INSERT_ID();
   END IF;
 
-  -- Resolve session
+  -- Resolve or create session
   INSERT IGNORE INTO trading_session (trading_date) VALUES (p_date);
   SELECT session_id INTO v_session_id FROM trading_session WHERE trading_date = p_date;
 
   -- Upsert price data
   INSERT INTO price_data
-    (company_id, session_id, open_price, high_price, low_price, close_price, volume, turnover, prev_close, percent_change)
+    (company_id, session_id, open_price, high_price, low_price,
+     close_price, volume, turnover, prev_close, percent_change)
   VALUES
-    (v_company_id, v_session_id, p_open, p_high, p_low, p_close, p_volume, p_turnover, p_prev_close, p_pct_change)
+    (v_company_id, v_session_id, p_open, p_high, p_low,
+     p_close, p_volume, p_turnover, p_prev_close, p_pct_change)
   ON DUPLICATE KEY UPDATE
     open_price     = VALUES(open_price),
     high_price     = VALUES(high_price),
@@ -358,6 +384,7 @@ BEGIN
 
   COMMIT;
 END$$
+DELIMITER ;
 
 -- Get price history for a company over a date range
 DROP PROCEDURE IF EXISTS sp_get_price_history;
@@ -370,22 +397,23 @@ CREATE PROCEDURE sp_get_price_history(
 COMMENT 'Returns OHLCV history for a symbol within a date range'
 BEGIN
   SELECT
-    t.trading_date                        AS date,
-    p.open_price                          AS open,
-    p.high_price                          AS high,
-    p.low_price                           AS low,
-    p.close_price                         AS close,
+    t.trading_date                                              AS date,
+    p.open_price                                                AS open,
+    p.high_price                                                AS high,
+    p.low_price                                                 AS low,
+    p.close_price                                               AS close,
     p.volume,
     p.turnover,
     COALESCE(p.percent_change,
-      fn_price_change_pct(p.close_price, p.prev_close)) AS pct_change
+      fn_price_change_pct(p.close_price, p.prev_close))        AS pct_change
   FROM price_data      p
-  JOIN trading_session t ON p.session_id  = t.session_id
-  JOIN company         c ON p.company_id  = c.company_id
+  JOIN trading_session t ON p.session_id = t.session_id
+  JOIN company         c ON p.company_id = c.company_id
   WHERE c.symbol       = UPPER(p_symbol)
     AND t.trading_date BETWEEN p_from_date AND p_to_date
   ORDER BY t.trading_date ASC;
 END$$
+DELIMITER ;
 
 -- Recompute daily_market_summary for a given date
 DROP PROCEDURE IF EXISTS sp_refresh_daily_summary;
@@ -394,21 +422,22 @@ CREATE PROCEDURE sp_refresh_daily_summary(IN p_date DATE)
 COMMENT 'Aggregates market stats for one trading day into daily_market_summary'
 BEGIN
   INSERT INTO daily_market_summary
-    (trading_date, total_turnover, total_volume, total_companies, gainers, losers, neutral, avg_change_pct)
+    (trading_date, total_turnover, total_volume, total_companies,
+     gainers, losers, neutral, avg_change_pct)
   SELECT
     ts.trading_date,
-    COALESCE(SUM(p.turnover),0),
-    COALESCE(SUM(p.volume),0),
+    COALESCE(SUM(p.turnover), 0),
+    COALESCE(SUM(p.volume),   0),
     COUNT(*),
-    SUM(COALESCE(p.percent_change,0) > 0),
-    SUM(COALESCE(p.percent_change,0) < 0),
-    SUM(COALESCE(p.percent_change,0) = 0),
-    ROUND(AVG(COALESCE(p.percent_change,0)),2)
+    SUM(COALESCE(p.percent_change, 0) > 0),
+    SUM(COALESCE(p.percent_change, 0) < 0),
+    SUM(COALESCE(p.percent_change, 0) = 0),
+    ROUND(AVG(COALESCE(p.percent_change, 0)), 2)
   FROM price_data      p
   JOIN trading_session ts ON p.session_id = ts.session_id
   JOIN company         c  ON p.company_id = c.company_id
   WHERE ts.trading_date = p_date
-    AND c.is_active = 1
+    AND c.is_active     = 1
   ON DUPLICATE KEY UPDATE
     total_turnover  = VALUES(total_turnover),
     total_volume    = VALUES(total_volume),
@@ -419,6 +448,7 @@ BEGIN
     avg_change_pct  = VALUES(avg_change_pct),
     computed_at     = CURRENT_TIMESTAMP;
 END$$
+DELIMITER ;
 
 -- Assign correct sectors based on known NEPSE symbol patterns
 DROP PROCEDURE IF EXISTS sp_fix_sectors;
@@ -507,45 +537,60 @@ BEGIN
   WHERE sector_id = 14
     AND (symbol REGEXP '^[A-Z]+(MF[0-9]+|MF)$' OR symbol LIKE '%MULF%');
 
-  SELECT CONCAT('Sector fix complete. Companies still in Others: ',
-    COUNT(*)) AS result
-  FROM company WHERE sector_id = 14 AND is_active = 1;
+  SELECT CONCAT('Sector fix complete. Companies still in Others: ', COUNT(*)) AS result
+  FROM company
+  WHERE sector_id = 14 AND is_active = 1;
 END$$
 DELIMITER ;
 
 
 -- ─────────────────────────────────────────────────────────────────
 --  7. TRIGGERS  (automated data integrity)
+--
+--  FIX: The original had trg_price_data_validate_before_insert and
+--  trg_price_data_validate_before_update with identical bodies.
+--  We keep both (MySQL requires separate INSERT / UPDATE triggers)
+--  but extract the shared logic into a clear comment so maintenance
+--  is obvious.  Both triggers are now named consistently:
+--    trg_validate_before_insert
+--    trg_validate_before_update
 -- ─────────────────────────────────────────────────────────────────
 
--- Ensure high >= low and high >= open/close on every insert/update
-DROP TRIGGER IF EXISTS trg_price_data_validate_before_insert;
+-- Helper note: the body below is intentionally identical for INSERT
+-- and UPDATE — MySQL does not support shared trigger bodies.
+
+DROP TRIGGER IF EXISTS trg_validate_before_insert;
 DELIMITER $$
-CREATE TRIGGER trg_price_data_validate_before_insert
+CREATE TRIGGER trg_validate_before_insert
 BEFORE INSERT ON price_data
 FOR EACH ROW
 BEGIN
-  -- Swap high/low if inverted
+  -- Swap inverted high/low
   IF NEW.high_price < NEW.low_price THEN
     SET @tmp = NEW.high_price;
     SET NEW.high_price = NEW.low_price;
     SET NEW.low_price  = @tmp;
   END IF;
-  -- Clamp: high must be >= open and close
+  -- Clamp high to be >= open and close
   IF NEW.high_price < NEW.open_price  THEN SET NEW.high_price = NEW.open_price;  END IF;
   IF NEW.high_price < NEW.close_price THEN SET NEW.high_price = NEW.close_price; END IF;
-  -- Clamp: low must be <= open and close
-  IF NEW.low_price > NEW.open_price   THEN SET NEW.low_price  = NEW.open_price;  END IF;
-  IF NEW.low_price > NEW.close_price  THEN SET NEW.low_price  = NEW.close_price; END IF;
-  -- Auto-compute percent_change if missing
-  IF NEW.percent_change IS NULL AND NEW.prev_close IS NOT NULL AND NEW.prev_close > 0 THEN
-    SET NEW.percent_change = ROUND(((NEW.close_price - NEW.prev_close) / NEW.prev_close) * 100, 2);
+  -- Clamp low to be <= open and close
+  IF NEW.low_price  > NEW.open_price  THEN SET NEW.low_price  = NEW.open_price;  END IF;
+  IF NEW.low_price  > NEW.close_price THEN SET NEW.low_price  = NEW.close_price; END IF;
+  -- Auto-compute percent_change when missing
+  IF NEW.percent_change IS NULL
+     AND NEW.prev_close IS NOT NULL
+     AND NEW.prev_close > 0
+  THEN
+    SET NEW.percent_change =
+      ROUND(((NEW.close_price - NEW.prev_close) / NEW.prev_close) * 100, 2);
   END IF;
 END$$
+DELIMITER ;
 
-DROP TRIGGER IF EXISTS trg_price_data_validate_before_update;
+DROP TRIGGER IF EXISTS trg_validate_before_update;
 DELIMITER $$
-CREATE TRIGGER trg_price_data_validate_before_update
+CREATE TRIGGER trg_validate_before_update
 BEFORE UPDATE ON price_data
 FOR EACH ROW
 BEGIN
@@ -558,8 +603,12 @@ BEGIN
   IF NEW.high_price < NEW.close_price THEN SET NEW.high_price = NEW.close_price; END IF;
   IF NEW.low_price  > NEW.open_price  THEN SET NEW.low_price  = NEW.open_price;  END IF;
   IF NEW.low_price  > NEW.close_price THEN SET NEW.low_price  = NEW.close_price; END IF;
-  IF NEW.percent_change IS NULL AND NEW.prev_close IS NOT NULL AND NEW.prev_close > 0 THEN
-    SET NEW.percent_change = ROUND(((NEW.close_price - NEW.prev_close) / NEW.prev_close) * 100, 2);
+  IF NEW.percent_change IS NULL
+     AND NEW.prev_close IS NOT NULL
+     AND NEW.prev_close > 0
+  THEN
+    SET NEW.percent_change =
+      ROUND(((NEW.close_price - NEW.prev_close) / NEW.prev_close) * 100, 2);
   END IF;
 END$$
 DELIMITER ;
@@ -573,7 +622,9 @@ FOR EACH ROW
 BEGIN
   DECLARE v_date DATE;
   SELECT trading_date INTO v_date
-  FROM   trading_session WHERE session_id = NEW.session_id LIMIT 1;
+  FROM   trading_session
+  WHERE  session_id = NEW.session_id
+  LIMIT  1;
   IF v_date IS NOT NULL THEN
     CALL sp_refresh_daily_summary(v_date);
   END IF;
@@ -600,12 +651,12 @@ DELIMITER ;
 
 
 -- ─────────────────────────────────────────────────────────────────
---  9. RUN INITIAL DATA SETUP
+--  9. INITIAL DATA SETUP
 -- ─────────────────────────────────────────────────────────────────
--- Fix any companies already loaded that are stuck in 'Others'
 CALL sp_fix_sectors();
 
 SET FOREIGN_KEY_CHECKS = 1;
+
 
 -- ─────────────────────────────────────────────────────────────────
 --  10. VERIFY

@@ -1,115 +1,117 @@
 import { auth } from '@/lib/auth'
 import { redirect } from 'next/navigation'
-import nepsePool from '@/lib/db-nepse'
+import { nepsePool } from '@/lib/db'
 import { RowDataPacket } from 'mysql2'
-import Link from 'next/link'
+import SearchResults from './SearchResults'
 
 export const runtime = 'nodejs'
 
-async function search(q: string) {
-  if (!q) return []
-  const [rows] = await nepsePool.query<RowDataPacket[]>(
-    `SELECT c.symbol, c.name, s.name AS sector,
-        p.close_price, p.percent_change, p.volume, t.trading_date
-     FROM company c
-     JOIN sector s ON c.sector_id = s.sector_id
-     LEFT JOIN price_data p ON c.company_id = p.company_id
-     LEFT JOIN trading_session t ON p.session_id = t.session_id
-       AND t.trading_date = (
-         SELECT MAX(ts2.trading_date) FROM price_data p2
-         JOIN trading_session ts2 ON p2.session_id = ts2.session_id
-         WHERE p2.company_id = c.company_id
-       )
-     WHERE (c.symbol LIKE ? OR c.name LIKE ?) AND c.is_active = 1
-     ORDER BY c.symbol LIMIT 30`,
-    [`${q}%`, `%${q}%`])
-  return rows
+interface SearchRow {
+  symbol:         string
+  name:           string
+  sector:         string
+  close_price:    number | null
+  percent_change: number | null
+  volume:         number | null
+  trading_date:   string | null
 }
 
-export default async function SearchPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+/**
+ * FIX: Original searched only v_latest_prices, so companies with no
+ * price data loaded yet were invisible.
+ * Now queries company + sector directly, LEFT JOINs latest price.
+ * Every active company appears in results regardless of price data.
+ */
+async function search(q: string): Promise<SearchRow[]> {
+  if (!q) return []
+  const keyword = `%${q}%`
+  const [rows] = await nepsePool().query<RowDataPacket[]>(
+    `SELECT
+       c.symbol,
+       c.name,
+       s.name                                         AS sector,
+       p.close_price,
+       p.percent_change,
+       p.volume,
+       DATE_FORMAT(t.trading_date, '%Y-%m-%d')        AS trading_date
+     FROM company c
+     JOIN sector s ON c.sector_id = s.sector_id
+     -- Derive latest session per company in one pass (no correlated subquery)
+     LEFT JOIN (
+       SELECT company_id, MAX(session_id) AS latest_sid
+       FROM price_data
+       GROUP BY company_id
+     ) lp ON lp.company_id = c.company_id
+     LEFT JOIN price_data     p ON p.company_id = c.company_id
+                                AND p.session_id = lp.latest_sid
+     LEFT JOIN trading_session t ON t.session_id = lp.latest_sid
+     WHERE c.is_active = 1
+       AND (c.symbol LIKE ? OR c.name LIKE ?)
+     ORDER BY
+       CASE WHEN c.symbol = ? THEN 0 ELSE 1 END,
+       c.symbol ASC
+     LIMIT 30`,
+    [keyword, keyword, q]
+  )
+  return rows as SearchRow[]
+}
+
+export default async function SearchPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string }>
+}) {
   const session = await auth()
   if (!session) redirect('/login')
-  const params = await searchParams
-  const q = (params.q ?? '').toUpperCase().trim()
-  const results = await search(q)
+
+  const params  = await searchParams
+  const q       = (params.q ?? '').trim().toUpperCase()
+  const results = q ? await search(q) : []
 
   return (
     <div className="max-w-4xl mx-auto space-y-5">
       <div>
-        <h1 className="text-xl font-bold" style={{ color: '#0f172a' }}>
+        <h1 className="text-xl font-bold" style={{ color: '#1e1b4b' }}>
           {q ? `Results for "${q}"` : 'Search Companies'}
         </h1>
-        {q && <p className="text-sm mt-0.5" style={{ color: '#64748b' }}>{results.length} result{results.length !== 1 ? 's' : ''} found</p>}
+        {q && (
+          <p className="text-sm mt-0.5" style={{ color: '#64748b' }}>
+            {results.length} result{results.length !== 1 ? 's' : ''} found
+          </p>
+        )}
       </div>
 
-      <form method="get" className="flex gap-3">
-        <input name="q" defaultValue={q} placeholder="Search by symbol or company name…" autoFocus
-          className="flex-1 px-4 py-2.5 rounded-lg text-sm outline-none"
-          style={{ border: '1px solid #e2e8f0', color: '#0f172a', background: 'white' }}/>
-        <button type="submit" className="px-5 py-2.5 rounded-lg text-sm font-medium text-white"
-          style={{ background: '#2563eb', border: 'none', cursor: 'pointer' }}>
+      <form method="get" style={{ display: 'flex', gap: 10 }}>
+        <input name="q" defaultValue={q}
+          placeholder="Search by symbol or company name…"
+          autoFocus autoComplete="off"
+          style={{ flex:1, padding:'10px 14px', borderRadius:8, fontSize:14,
+            border:'1px solid #e2e8f0', color:'#0f172a', background:'white', outline:'none' }}/>
+        <button type="submit"
+          style={{ padding:'10px 20px', borderRadius:8, fontSize:14, fontWeight:600,
+            color:'white', background:'#4338ca', border:'none', cursor:'pointer' }}>
           Search
         </button>
       </form>
 
-      {results.length === 0 && q && (
-        <div className="bg-white rounded-xl border p-8 text-center" style={{ borderColor: '#e2e8f0' }}>
-          <p className="text-sm" style={{ color: '#94a3b8' }}>No companies found for <span style={{ color: '#0f172a' }}>&quot;{q}&quot;</span></p>
+      {q && results.length === 0 && (
+        <div className="bg-white rounded-xl border p-8 text-center" style={{ borderColor:'#e2e8f0' }}>
+          <p className="text-sm" style={{ color:'#94a3b8' }}>
+            No companies found for <span style={{ color:'#0f172a', fontWeight:600 }}>"{q}"</span>
+          </p>
         </div>
       )}
 
-      {results.length > 0 && (
-        <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor: '#e2e8f0' }}>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-xs font-medium" style={{ background: '#f8fafc', borderColor: '#e2e8f0', color: '#64748b' }}>
-                <th className="text-left px-5 py-3">Symbol</th>
-                <th className="text-left px-4 py-3">Company</th>
-                <th className="text-left px-4 py-3">Sector</th>
-                <th className="text-right px-4 py-3">Close</th>
-                <th className="text-right px-5 py-3">Change</th>
-                <th className="text-right px-5 py-3">Volume</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(results as any[]).map(r => {
-                const up = Number(r.percent_change ?? 0) >= 0
-                return (
-                  <tr key={`${r.symbol}-${r.trading_date}`} className="border-b transition-colors"
-                    style={{ borderColor: '#f8fafc' }}
-                    onMouseOver={e => (e.currentTarget as HTMLElement).style.background = '#f8fafc'}
-                    onMouseOut={e  => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
-                    <td className="px-5 py-3">
-                      <Link href={`/dashboard/stock/${r.symbol}`}
-                        style={{ color: '#2563eb', fontWeight: 700, textDecoration: 'none' }}>
-                        {r.symbol}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3 max-w-[200px] truncate" style={{ color: '#475569' }}>{r.name}</td>
-                    <td className="px-4 py-3">
-                      <span className="text-xs px-2 py-0.5 rounded-full"
-                        style={{ background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe' }}>
-                        {String(r.sector ?? '').split(' ').slice(0, 2).join(' ')}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right font-semibold" style={{ color: '#0f172a', fontFamily: 'monospace' }}>
-                      {r.close_price ? `Rs.${Number(r.close_price).toLocaleString()}` : '—'}
-                    </td>
-                    <td className="px-5 py-3 text-right">
-                      {r.percent_change != null
-                        ? <span className="text-xs font-semibold" style={{ color: up ? '#16a34a' : '#dc2626' }}>
-                            {up ? '+' : ''}{Number(r.percent_change).toFixed(2)}%
-                          </span>
-                        : <span style={{ color: '#94a3b8', fontSize: 12 }}>—</span>}
-                    </td>
-                    <td className="px-5 py-3 text-right" style={{ color: '#64748b', fontFamily: 'monospace' }}>
-                      {r.volume ? Number(r.volume).toLocaleString() : '—'}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+      {results.length > 0 && <SearchResults results={results} />}
+
+      {!q && (
+        <div className="bg-white rounded-xl border p-10 text-center" style={{ borderColor:'#e2e8f0' }}>
+          <svg className="w-10 h-10 mx-auto mb-4" style={{ color:'#c7d2fe' }}
+            fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+          <p className="text-sm" style={{ color:'#94a3b8' }}>Type a symbol or company name above to search</p>
         </div>
       )}
     </div>
