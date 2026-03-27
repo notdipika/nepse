@@ -81,3 +81,6 @@ pip install mysql-connector-python pymysql pandas requests openpyxl
 | `ER_BAD_DB_ERROR` | Run setup_databases.sql |
 | `load_history.py not found` | Set HIST_LOADER_PATH or place in project root |
 | `No module named mysql.connector` | pip install mysql-connector-python |
+
+
+Dips.
